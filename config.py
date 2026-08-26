@@ -1,5 +1,5 @@
 # config.py
-
+import os
 BOT_TOKEN = os.environ.get("BOT_TOKEN") # আপনার আসল টোকেনটি এখানে দেবেন
 
 # 🚀 আপনার বটের ইউজারনেম দিন (রেফারেল লিংকের জন্য, @ ছাড়া)
