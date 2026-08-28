@@ -3,15 +3,18 @@ import html
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database.crud import db, get_user
-from google.cloud.firestore_v1.base_query import FieldFilter # 🚀 নতুন ফায়ারবেস ফিল্টার রুলস
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 router = Router()
 
+# ==========================================
+# 👤 প্রোফাইল সেকশন
+# ==========================================
 @router.callback_query(F.data.in_(["my_profile", "menu_profile"]))
 async def show_profile(callback: CallbackQuery):
     user_id = callback.from_user.id
     
-    # 🚀 ফায়ারবেস থেকে লাইভ ডেটা আনা
+    # ফায়ারবেস থেকে লাইভ ডেটা আনা
     user_data = await get_user(user_id)
     
     if user_data:
@@ -19,7 +22,6 @@ async def show_profile(callback: CallbackQuery):
         total_spent = user_data.get('total_spent', 0.0)
         total_referrals = user_data.get('total_referrals', 0)
         
-        # html.escape ব্যবহার করা হলো যাতে নামের স্পেশাল ক্যারেক্টারে কোড ক্র্যাশ না করে
         safe_name = html.escape(callback.from_user.first_name)
         
         profile_text = (
@@ -35,16 +37,17 @@ async def show_profile(callback: CallbackQuery):
         profile_text = "⚠️ Profile not found in database! Please click /start again."
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 My Orders", callback_data="my_orders")],
         [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
     ])
     
     await callback.message.edit_text(profile_text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
-# 🚀 ফায়ারবেস থেকে অর্ডার হিস্ট্রি দেখানোর সিস্টেম (বুলেটপ্রুফ ভার্সন)
+# ==========================================
+# 🛒 ডেডিকেটেড মাই অর্ডারস সেকশন (Keys সহ)
+# ==========================================
 @router.callback_query(F.data == "my_orders")
-async def show_orders(callback: CallbackQuery):
+async def show_dedicated_orders(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     if not db:
@@ -52,7 +55,7 @@ async def show_orders(callback: CallbackQuery):
         return
         
     try:
-        # 🚀 ফায়ারবেসের লেটেস্ট FieldFilter ব্যবহার করে ইউজারের অর্ডার খোঁজা
+        # ফায়ারবেস থেকে ইউজারের সব অর্ডার টেনে আনা
         orders_ref = db.collection('orders').where(filter=FieldFilter('user_id', '==', user_id)).stream()
         orders_list = list(orders_ref)
         
@@ -60,24 +63,37 @@ async def show_orders(callback: CallbackQuery):
             await callback.answer("❌ You haven't placed any orders yet.", show_alert=True)
             return
             
-        text = "🛒 <b>Your Order History</b>\n\n"
+        text = "🛒 <b>Your Order History & Keys</b>\n\n"
         
-        for doc in orders_list:
+        # লুপ চালিয়ে প্রতিটি অর্ডারের বিস্তারিত বের করা
+        for i, doc in enumerate(orders_list, 1):
             data = doc.to_dict()
-            # প্রোডাক্টের নামে স্পেশাল ক্যারেক্টার থাকলে সেটা সেভ করা হলো
             prod_name = html.escape(data.get('product_name', 'Unknown Product'))
             qty = data.get('qty', 1)
             price = data.get('total_price', 0.0)
             
-            text += f"📦 <b>{prod_name}</b> (Qty: {qty}) - ${price}\n"
+            # ডাটাবেস থেকে ডেলিভারি হওয়া কি (Keys) গুলো বের করা
+            items = data.get('items_delivered', [])
+            
+            if items:
+                items_text = "\n".join([f"🔑 <code>{html.escape(item)}</code>" for item in items])
+            else:
+                items_text = "⚠️ No data/keys found."
+            
+            text += (
+                f"<b>{i}. {prod_name}</b>\n"
+                f"📦 <b>Qty:</b> {qty} | 💰 <b>Paid:</b> ${price}\n"
+                f"📥 <b>Your Delivered Items:</b>\n{items_text}\n"
+                "➖➖➖➖➖➖➖➖➖➖\n"
+            )
             
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Back to Profile", callback_data="menu_profile")]
+            [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")] 
         ])
+        
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         await callback.answer()
         
     except Exception as e:
-        # 🚀 যদি কোনো কারণে এরর আসে, সেটা সাইলেন্ট না থেকে সরাসরি বটে মেসেজ দিয়ে দেবে!
         await callback.message.answer(f"⚠️ <b>Developer Alert - Error:</b> {e}")
         await callback.answer("❌ Failed to load orders.", show_alert=True)
