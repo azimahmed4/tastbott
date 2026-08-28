@@ -1,11 +1,12 @@
 # handlers/profile.py
+import html
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database.crud import db, get_user
+from google.cloud.firestore_v1.base_query import FieldFilter # 🚀 নতুন ফায়ারবেস ফিল্টার রুলস
 
 router = Router()
 
-# 🚀 এখানে "menu_profile" অ্যাড করা হলো, যাতে মেইন মেনুর বাটন ঠিকমতো কাজ করে!
 @router.callback_query(F.data.in_(["my_profile", "menu_profile"]))
 async def show_profile(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -18,9 +19,12 @@ async def show_profile(callback: CallbackQuery):
         total_spent = user_data.get('total_spent', 0.0)
         total_referrals = user_data.get('total_referrals', 0)
         
+        # html.escape ব্যবহার করা হলো যাতে নামের স্পেশাল ক্যারেক্টারে কোড ক্র্যাশ না করে
+        safe_name = html.escape(callback.from_user.first_name)
+        
         profile_text = (
             f"👤 <b>Your Profile</b>\n\n"
-            f"📛 <b>Name:</b> {callback.from_user.first_name}\n"
+            f"📛 <b>Name:</b> {safe_name}\n"
             f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
             "➖➖➖➖➖➖➖➖➖➖\n"
             f"💰 <b>Balance:</b> ${balance:.2f}\n"
@@ -38,7 +42,7 @@ async def show_profile(callback: CallbackQuery):
     await callback.message.edit_text(profile_text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
-# 🚀 ফায়ারবেস থেকে অর্ডার হিস্ট্রি দেখানোর সিস্টেম
+# 🚀 ফায়ারবেস থেকে অর্ডার হিস্ট্রি দেখানোর সিস্টেম (বুলেটপ্রুফ ভার্সন)
 @router.callback_query(F.data == "my_orders")
 async def show_orders(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -47,22 +51,33 @@ async def show_orders(callback: CallbackQuery):
         await callback.answer("❌ Database error!", show_alert=True)
         return
         
-    # ফায়ারবেস থেকে ইউজারের সব অর্ডার আনা
-    orders_ref = db.collection('orders').where('user_id', '==', user_id).stream()
-    orders_list = list(orders_ref)
-    
-    if not orders_list:
-        await callback.answer("❌ You haven't placed any orders yet.", show_alert=True)
-        return
+    try:
+        # 🚀 ফায়ারবেসের লেটেস্ট FieldFilter ব্যবহার করে ইউজারের অর্ডার খোঁজা
+        orders_ref = db.collection('orders').where(filter=FieldFilter('user_id', '==', user_id)).stream()
+        orders_list = list(orders_ref)
         
-    text = "🛒 <b>Your Order History</b>\n\n"
-    for doc in orders_list:
-        data = doc.to_dict()
-        text += f"📦 <b>{data.get('product_name')}</b> (Qty: {data.get('qty')}) - ${data.get('total_price')}\n"
+        if not orders_list:
+            await callback.answer("❌ You haven't placed any orders yet.", show_alert=True)
+            return
+            
+        text = "🛒 <b>Your Order History</b>\n\n"
         
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        # 🚀 ব্যাক বাটনেও menu_profile দেওয়া হলো যাতে ব্যাকে গেলে প্রোফাইলই দেখায়
-        [InlineKeyboardButton(text="◀️ Back to Profile", callback_data="menu_profile")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-    await callback.answer()
+        for doc in orders_list:
+            data = doc.to_dict()
+            # প্রোডাক্টের নামে স্পেশাল ক্যারেক্টার থাকলে সেটা সেভ করা হলো
+            prod_name = html.escape(data.get('product_name', 'Unknown Product'))
+            qty = data.get('qty', 1)
+            price = data.get('total_price', 0.0)
+            
+            text += f"📦 <b>{prod_name}</b> (Qty: {qty}) - ${price}\n"
+            
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Back to Profile", callback_data="menu_profile")]
+        ])
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+        
+    except Exception as e:
+        # 🚀 যদি কোনো কারণে এরর আসে, সেটা সাইলেন্ট না থেকে সরাসরি বটে মেসেজ দিয়ে দেবে!
+        await callback.message.answer(f"⚠️ <b>Developer Alert - Error:</b> {e}")
+        await callback.answer("❌ Failed to load orders.", show_alert=True)
