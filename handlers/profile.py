@@ -46,7 +46,7 @@ async def show_profile(callback: CallbackQuery):
 # ==========================================
 # 🛒 ডেডিকেটেড মাই অর্ডারস সেকশন (Keys সহ)
 # ==========================================
-@router.callback_query(F.data == "my_orders")
+@router.callback_query(F.data == "menu_orders")
 async def show_dedicated_orders(callback: CallbackQuery):
     user_id = callback.from_user.id
     
