@@ -45,7 +45,7 @@ async def show_orders(callback: CallbackQuery):
         await callback.answer("❌ Database error!", show_alert=True)
         return
         
-    # ফায়ারবেস থেকে ইউজারের সব অর্ডার টেনে আনা
+    # ফায়ারবেস থেকে ইউজারের সব অর্ডার আনা
     orders_ref = db.collection('orders').where('user_id', '==', user_id).stream()
     orders_list = list(orders_ref)
     
