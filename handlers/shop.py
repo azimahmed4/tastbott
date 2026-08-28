@@ -3,7 +3,9 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from database.dummy_db import PRODUCTS
+
+# 🚀 ফায়ারবেস ফাংশন ইমপোর্ট করা হলো
+from database.crud import get_all_products, get_product
 
 router = Router()
 
@@ -14,16 +16,24 @@ class OrderState(StatesGroup):
 @router.callback_query(F.data == "menu_buy")
 async def show_products(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    keyboard = []
-    for prod_id, details in PRODUCTS.items():
-        price_text = f"- ${details['price']} " if details['price'] > 0 else ""
-        btn_text = f"📦 {details['name']} {price_text}| Stock: {details['stock']}"
-        cb_data = f"buy_{prod_id}" if details['stock'] > 0 else "out_of_stock"
-        keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=cb_data)])
     
+    # 🚀 ফায়ারবেস থেকে লাইভ প্রোডাক্ট লিস্ট আনা হচ্ছে
+    products = await get_all_products()
+    
+    keyboard = []
+    if products:
+        for prod_id, details in products.items():
+            price_text = f"- ${details['price']} " if details['price'] > 0 else ""
+            btn_text = f"📦 {details['name']} {price_text}| Stock: {details['stock']}"
+            cb_data = f"buy_{prod_id}" if details['stock'] > 0 else "out_of_stock"
+            keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=cb_data)])
+        text = "<b>Available products</b>\nPlease select a product to proceed 🎉"
+    else:
+        text = "⚠️ <b>No products available right now.</b>\nPlease check back later!"
+        
     keyboard.append([InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    text = "<b>Available products</b>\nPlease select a product to proceed 🎉"
+    
     await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 @router.callback_query(F.data == "out_of_stock")
@@ -34,7 +44,10 @@ async def handle_out_of_stock(callback: CallbackQuery):
 async def select_quantity(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     prod_id = callback.data.split("_", 1)[1]
-    product = PRODUCTS.get(prod_id)
+    
+    # 🚀 ফায়ারবেস থেকে নির্দিষ্ট প্রোডাক্টের ডাটা আনা
+    product = await get_product(prod_id)
+    
     if not product:
         await callback.answer("❌ Error: Product not found!", show_alert=True)
         return
@@ -70,7 +83,10 @@ async def select_quantity(callback: CallbackQuery, state: FSMContext):
 async def broadcast_buy_redirect(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     prod_id = callback.data.split("_", 1)[1]
-    product = PRODUCTS.get(prod_id)
+    
+    # 🚀 ফায়ারবেস থেকে নির্দিষ্ট প্রোডাক্টের ডাটা আনা
+    product = await get_product(prod_id)
+    
     if not product:
         await callback.answer("❌ Error: Product not found or deleted!", show_alert=True)
         return
@@ -108,8 +124,15 @@ async def confirm_order(callback: CallbackQuery):
     qty = int(parts[1])
     prod_id = "_".join(parts[2:]) 
     
-    product = PRODUCTS.get(prod_id)
+    # 🚀 ফায়ারবেস থেকে লাইভ ডাটা চেক করা
+    product = await get_product(prod_id)
     if not product:
+        await callback.answer("❌ Error: Product not found!", show_alert=True)
+        return
+    
+    # স্টক চেক করা
+    if qty > product['stock']:
+        await callback.answer(f"⚠️ Only {product['stock']} items left in stock!", show_alert=True)
         return
     
     base_price = product['price']
@@ -150,7 +173,9 @@ async def custom_quantity_start(callback: CallbackQuery, state: FSMContext):
 async def process_custom_quantity(message: Message, state: FSMContext):
     user_data = await state.get_data()
     prod_id = user_data.get("product_id")
-    product = PRODUCTS.get(prod_id)
+    
+    # 🚀 ফায়ারবেস থেকে লাইভ ডাটা চেক করা
+    product = await get_product(prod_id)
     
     if not message.text.isdigit():
         await message.answer("⚠️ Please enter a valid number (e.g., 25). Try again:")
