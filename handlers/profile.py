@@ -1,75 +1,64 @@
 # handlers/profile.py
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-# আপনার আগের USER_ORDERS এর সাথে নতুনগুলো ইমপোর্ট করা হলো
-from database.dummy_db import USER_ORDERS, USER_BALANCES, USER_SPENT, USER_REFERRALS
+from database.crud import db, get_user
 
 router = Router()
 
-# --- 👤 Profile Section (নতুন যুক্ত করা হলো) ---
-@router.callback_query(F.data == "menu_profile")
+@router.callback_query(F.data == "my_profile")
 async def show_profile(callback: CallbackQuery):
     user_id = callback.from_user.id
     
-    # ডাটাবেস থেকে ইউজারের তথ্য নেওয়া
-    balance = USER_BALANCES.get(user_id, 0.0)
-    spent = USER_SPENT.get(user_id, 0.0)
-    ref_count = USER_REFERRALS.get(user_id, 0)
-    orders = USER_ORDERS.get(user_id, [])
-    orders_count = len(orders)
+    # 🚀 ফায়ারবেস থেকে লাইভ ডেটা আনা
+    user_data = await get_user(user_id)
     
-    # Username হ্যান্ডলিং
-    first_name = callback.from_user.first_name
-    username = callback.from_user.username
-    user_display = f"@{username}" if username else "Not Set"
-    
-    text = (
-        "👤 <b>User Profile</b>\n\n"
-        f"📛 <b>Name:</b> {first_name}\n"
-        f"💠 <b>Username:</b> {user_display}\n"
-        f"🆔 <b>Account ID:</b> <code>{user_id}</code>\n"
-        "➖➖➖➖➖➖➖➖➖➖\n"
-        f"💰 <b>Current Balance:</b> ${balance}\n"
-        f"💸 <b>Total Spent:</b> ${spent}\n"
-        f"📦 <b>Total Orders:</b> {orders_count}\n"
-        f"👥 <b>Total Referrals:</b> {ref_count}\n"
-        "➖➖➖➖➖➖➖➖➖➖"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 View My Orders", callback_data="menu_orders")],
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-
-# --- 📦 Orders Section (আপনার দেওয়া পূর্বের কোড) ---
-@router.callback_query(F.data == "menu_orders")
-async def show_my_orders(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    orders = USER_ORDERS.get(user_id, [])
-
-    if not orders:
-        text = (
-            "📦 <b>My Orders</b>\n\n"
-            "You haven't placed any orders yet. 🛒\n"
-            "Go to 'Buy Products' to make your first purchase!"
+    if user_data:
+        balance = user_data.get('balance', 0.0)
+        total_spent = user_data.get('total_spent', 0.0)
+        total_referrals = user_data.get('total_referrals', 0)
+        
+        profile_text = (
+            f"👤 <b>Your Profile</b>\n\n"
+            f"📛 <b>Name:</b> {callback.from_user.first_name}\n"
+            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+            "➖➖➖➖➖➖➖➖➖➖\n"
+            f"💰 <b>Balance:</b> ${balance:.2f}\n"
+            f"💸 <b>Total Spent:</b> ${total_spent:.2f}\n"
+            f"👥 <b>Total Referrals:</b> {total_referrals}\n"
         )
     else:
-        text = "📦 <b>My Recent Orders</b>\n\n"
-        # শেষের ৫টি অর্ডার দেখাবে (যাতে মেসেজ বেশি বড় না হয়ে যায়)
-        for idx, order in enumerate(reversed(orders[-5:]), start=1):
-            text += (
-                f"🛍️ <b>Order #{idx}</b>\n"
-                f"🔹 <b>Product:</b> {order['product_name']} (x{order['qty']})\n"
-                f"💰 <b>Total Paid:</b> ${order['total_price']}\n"
-                f"📥 <b>Keys/Data:</b>\n<code>{order['items']}</code>\n" # এখানে শুধু একটা \n দিয়েছি ডিজাইন ঠিক রাখতে
-                "➖➖➖➖➖➖➖➖➖➖\n"
-            )
+        profile_text = "⚠️ Profile not found in database! Please click /start again."
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Go to Profile", callback_data="menu_profile")], # প্রোফাইলে ব্যাক যাওয়ার বাটন
-        [InlineKeyboardButton(text="🏠 Main Menu", callback_data="back_to_main")] # আপনার আগের মেইন মেনু বাটন
+        [InlineKeyboardButton(text="🛒 My Orders", callback_data="my_orders")],
+        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
     ])
     
+    await callback.message.edit_text(profile_text, reply_markup=keyboard, parse_mode="HTML")
+
+# 🚀 ফায়ারবেস থেকে অর্ডার হিস্ট্রি দেখানোর সিস্টেম
+@router.callback_query(F.data == "my_orders")
+async def show_orders(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    if not db:
+        await callback.answer("❌ Database error!", show_alert=True)
+        return
+        
+    # ফায়ারবেস থেকে ইউজারের সব অর্ডার টেনে আনা
+    orders_ref = db.collection('orders').where('user_id', '==', user_id).stream()
+    orders_list = list(orders_ref)
+    
+    if not orders_list:
+        await callback.answer("❌ You haven't placed any orders yet.", show_alert=True)
+        return
+        
+    text = "🛒 <b>Your Order History</b>\n\n"
+    for doc in orders_list:
+        data = doc.to_dict()
+        text += f"📦 <b>{data.get('product_name')}</b> (Qty: {data.get('qty')}) - ${data.get('total_price')}\n"
+        
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Back to Profile", callback_data="my_profile")]
+    ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
