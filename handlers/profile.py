@@ -5,7 +5,8 @@ from database.crud import db, get_user
 
 router = Router()
 
-@router.callback_query(F.data == "my_profile")
+# 🚀 এখানে "menu_profile" অ্যাড করা হলো, যাতে মেইন মেনুর বাটন ঠিকমতো কাজ করে!
+@router.callback_query(F.data.in_(["my_profile", "menu_profile"]))
 async def show_profile(callback: CallbackQuery):
     user_id = callback.from_user.id
     
@@ -35,6 +36,7 @@ async def show_profile(callback: CallbackQuery):
     ])
     
     await callback.message.edit_text(profile_text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
 
 # 🚀 ফায়ারবেস থেকে অর্ডার হিস্ট্রি দেখানোর সিস্টেম
 @router.callback_query(F.data == "my_orders")
@@ -59,6 +61,8 @@ async def show_orders(callback: CallbackQuery):
         text += f"📦 <b>{data.get('product_name')}</b> (Qty: {data.get('qty')}) - ${data.get('total_price')}\n"
         
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back to Profile", callback_data="my_profile")]
+        # 🚀 ব্যাক বাটনেও menu_profile দেওয়া হলো যাতে ব্যাকে গেলে প্রোফাইলই দেখায়
+        [InlineKeyboardButton(text="◀️ Back to Profile", callback_data="menu_profile")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
