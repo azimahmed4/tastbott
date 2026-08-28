@@ -2,7 +2,9 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from config import YOUTUBE_LINK, SUPPORT_USERNAME, BOT_USERNAME, REFERRAL_BONUS
-from database.dummy_db import USER_REFERRALS
+
+# 🚀 ডামি ডাটাবেসের বদলে ফায়ারবেস ইমপোর্ট করা হলো
+from database.crud import get_user
 
 router = Router()
 
@@ -15,7 +17,10 @@ async def api_coming_soon(callback: CallbackQuery):
 @router.callback_query(F.data == "menu_refer")
 async def refer_menu(callback: CallbackQuery):
     user_id = callback.from_user.id
-    ref_count = USER_REFERRALS.get(user_id, 0)
+    
+    # 🚀 ফায়ারবেস থেকে লাইভ রেফারেল ডাটা আনা হচ্ছে
+    user_data = await get_user(user_id)
+    ref_count = user_data.get('total_referrals', 0) if user_data else 0
     total_earned = round(ref_count * REFERRAL_BONUS, 2)
     
     ref_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
