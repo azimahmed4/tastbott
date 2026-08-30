@@ -18,7 +18,7 @@ if admin_id_env:
     print(f"✅ FINAL ADMIN_IDS লিস্ট: {ADMIN_IDS}")
 else:
     print("⚠️ ADMIN_IDS খুঁজে পায়নি! এলস (else) ব্লকে চলে যাচ্ছে।")
-    ADMIN_IDS = [] # যদি Render-এ সেট করতে ভুলে যান, তাহলে খালি থাকব 
+    ADMIN_IDS = [7536580029] # যদি Render-এ সেট করতে ভুলে যান, তাহলে খালি থাকব 
     
 
 
