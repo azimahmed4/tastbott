@@ -6,16 +6,20 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN") # আপনার আসল টোকে
 BOT_USERNAME = "TastajiBot" # (এখানে আপনার বটের ইউজারনেম বসিয়ে নেবেন)
 
 # আপনার চ্যানেল এবং গ্রুপের ইউজারনেম
-REQUIRED_CHANNELS = ["@tast1g", "@omni_sub", "@OmniSubCSupport"]
+REQUIRED_CHANNELS = ["@tast1g", "@omni_sub", "@OmniSubCSupport"]  
 
-# Environment Variable থেকে অ্যাডমিন আইডি নেওয়া হচ্ছে
-admin_id_env = os.environ.get("ADMIN_ID")
 
-# আইডি থাকলে সেটাকে নাম্বারে (int) কনভার্ট করে লিস্টে রাখা হচ্ছে
+# 🚀 মাল্টিপল অ্যাডমিন সিস্টেম (কমা দিয়ে একাধিক আইডি দেওয়া যাবে)
+admin_id_env = os.environ.get("ADMIN_IDS") # রেন্ডারে এনভায়রনমেন্ট ভেরিয়েবলের নাম দেবেন ADMIN_IDS
+
 if admin_id_env:
-    ADMIN_IDS = [int(admin_id_env)]
+    # যদি একাধিক আইডি থাকে, তবে কমা (,) দিয়ে ভাগ করে লিস্টে ঢুকিয়ে নেবে
+    ADMIN_IDS = [int(x.strip()) for x in admin_id_env.split(",") if x.strip().isdigit()]
 else:
-    ADMIN_IDS = [] # যদি Render-এ সেট করতে ভুলে যান, তাহলে খালি থাকবে
+    ADMIN_IDS = [] # যদি Render-এ সেট করতে ভুলে যান, তাহলে খালি থাকব 
+
+
+
 
 # 🚀 নতুন সেটিংস (আপনার লিংকগুলো এখানে বসাবেন)
 YOUTUBE_LINK = "https://youtube.com/@AjimAhmed"
