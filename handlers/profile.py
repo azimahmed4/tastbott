@@ -1,5 +1,6 @@
 # handlers/profile.py
 import html
+import datetime # 🚀 সময়ের হিসাব করার জন্য
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database.crud import db, get_user
@@ -44,7 +45,7 @@ async def show_profile(callback: CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 🛒 ডেডিকেটেড মাই অর্ডারস সেকশন (Keys সহ)
+# 🛒 ডেডিকেটেড মাই অর্ডারস সেকশন (ফ্রি অটো-ডিলিট লজিক সহ)
 # ==========================================
 @router.callback_query(F.data == "menu_orders")
 async def show_dedicated_orders(callback: CallbackQuery):
@@ -65,9 +66,25 @@ async def show_dedicated_orders(callback: CallbackQuery):
             
         text = "🛒 <b>Your Order History & Keys</b>\n\n"
         
+        # 🚀 বর্তমান সময় (UTC) বের করা
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        valid_orders_count = 0
+        
         # লুপ চালিয়ে প্রতিটি অর্ডারের বিস্তারিত বের করা
-        for i, doc in enumerate(orders_list, 1):
+        for doc in orders_list:
             data = doc.to_dict()
+            order_time = data.get('timestamp')
+            
+            # 🚀 বয়স চেক করা (৩০ দিনের বেশি হলে ডিলিট)
+            if order_time:
+                # Firestore থেকে আসা timestamp সাধারণত datetime অবজেক্ট হয়
+                days_old = (now_utc - order_time).days
+                if days_old > 30:
+                    # ফায়ারবেস থেকে পার্মানেন্টলি ডিলিট করে দেওয়া
+                    db.collection('orders').document(doc.id).delete()
+                    continue # এই অর্ডারটা আর ইউজারকে দেখাবে না এবং স্কিপ করবে
+            
+            valid_orders_count += 1
             prod_name = html.escape(data.get('product_name', 'Unknown Product'))
             qty = data.get('qty', 1)
             price = data.get('total_price', 0.0)
@@ -81,11 +98,15 @@ async def show_dedicated_orders(callback: CallbackQuery):
                 items_text = "⚠️ No data/keys found."
             
             text += (
-                f"<b>{i}. {prod_name}</b>\n"
+                f"<b>{valid_orders_count}. {prod_name}</b>\n"
                 f"📦 <b>Qty:</b> {qty} | 💰 <b>Paid:</b> ${price}\n"
                 f"📥 <b>Your Delivered Items:</b>\n{items_text}\n"
                 "➖➖➖➖➖➖➖➖➖➖\n"
             )
+            
+        # 🚀 যদি সব পুরোনো অর্ডার ডিলিট হয়ে যায় এবং নতুন কিছু না থাকে
+        if valid_orders_count == 0:
+            text = "⚠️ <b>Your order history is empty.</b>\n(Orders older than 30 days are automatically deleted to save space)."
             
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")] 
