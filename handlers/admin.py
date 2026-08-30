@@ -9,7 +9,7 @@ from firebase_admin import firestore
 
 from config import ADMIN_IDS
 # ফায়ারবেস ফাংশন
-from database.crud import db, get_all_products, get_product, delete_product
+from database.crud import db, get_product, delete_product
 
 router = Router()
 
