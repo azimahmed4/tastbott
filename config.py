@@ -15,8 +15,11 @@ admin_id_env = os.environ.get("ADMIN_IDS") # রেন্ডারে এনভ�
 if admin_id_env:
     # যদি একাধিক আইডি থাকে, তবে কমা (,) দিয়ে ভাগ করে লিস্টে ঢুকিয়ে নেবে
     ADMIN_IDS = [int(x.strip()) for x in admin_id_env.split(",") if x.strip().isdigit()]
+    print(f"✅ FINAL ADMIN_IDS লিস্ট: {ADMIN_IDS}")
 else:
+    print("⚠️ ADMIN_IDS খুঁজে পায়নি! এলস (else) ব্লকে চলে যাচ্ছে।")
     ADMIN_IDS = [] # যদি Render-এ সেট করতে ভুলে যান, তাহলে খালি থাকব 
+    
 
 
 
