@@ -1,215 +1,86 @@
 # handlers/shop.py
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-
-# 🚀 ফায়ারবেস ফাংশন ইমপোর্ট করা হলো
-from database.crud import get_all_products, get_product
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from database.crud import get_products_by_category, get_product
 
 router = Router()
 
-class OrderState(StatesGroup):
-    waiting_for_quantity = State()
-    product_id = None 
-
 @router.callback_query(F.data == "menu_buy")
-async def show_products(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    
-    # 🚀 ফায়ারবেস থেকে লাইভ প্রোডাক্ট লিস্ট আনা হচ্ছে
-    products = await get_all_products()
+async def show_categories(callback: CallbackQuery):
+    text = "🛒 <b>Shop Categories</b>\n\nPlease select a category to view products:"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 VPN", callback_data="showcat_vpn")],
+        [InlineKeyboardButton(text="🛡️ Proxy", callback_data="showcat_proxy")],
+        [InlineKeyboardButton(text="🎟️ Subscription", callback_data="showcat_sub")],
+        [InlineKeyboardButton(text="🤖 AI Subscription", callback_data="showcat_ai")],
+        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("showcat_"))
+async def show_products(callback: CallbackQuery):
+    cat = callback.data.split("_")[1]
+    products = await get_products_by_category(cat)
     
     keyboard = []
     if products:
-        for prod_id, details in products.items():
-            price_text = f"- ${details['price']} " if details['price'] > 0 else ""
-            btn_text = f"📦 {details['name']} {price_text}| Stock: {details['stock']}"
-            cb_data = f"buy_{prod_id}" if details['stock'] > 0 else "out_of_stock"
-            keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=cb_data)])
-        text = "<b>Available products</b>\nPlease select a product to proceed 🎉"
+        for pid, details in products.items():
+            # ফুল-উইডথ (এক লাইনে একটা) বাটন
+            btn_text = f"💎 {details['name']} - ${details['price']}"
+            keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"buy_{pid}")])
+        text = f"📂 <b>{cat.upper()} Products</b>\n\nSelect a product to proceed:"
     else:
-        text = "⚠️ <b>No products available right now.</b>\nPlease check back later!"
+        text = f"⚠️ <b>No products available in {cat.upper()} right now.</b>"
         
-    keyboard.append([InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")])
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Categories", callback_data="menu_buy")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
-@router.callback_query(F.data == "out_of_stock")
-async def handle_out_of_stock(callback: CallbackQuery):
-    await callback.answer("❌ This product is currently out of stock!", show_alert=True)
-
+# 🚀 ডাইনামিক কোয়ান্টিটি স্লাইডার সিস্টেম
 @router.callback_query(F.data.startswith("buy_"))
-async def select_quantity(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+async def start_buy(callback: CallbackQuery):
     prod_id = callback.data.split("_", 1)[1]
-    
-    # 🚀 ফায়ারবেস থেকে নির্দিষ্ট প্রোডাক্টের ডাটা আনা
-    product = await get_product(prod_id)
-    
-    if not product:
-        await callback.answer("❌ Error: Product not found!", show_alert=True)
-        return
-    
-    text = (
-        "⚠️ <b>Enter quantity</b>\n"
-        f"How many <b>{product['name']}</b> would you like to buy\n\n"
-        "🎉 <b>Bulk Discount Offers</b>\n"
-        f"✅ Buy 1 - 10 → ${product['price']} each\n"
-        f"✅ Buy 11 - 50 → ${round(product['price'] * 0.9, 2)} each\n"
-        f"✅ Buy 51+ → ${round(product['price'] * 0.8, 2)} each"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="1", callback_data=f"qty_1_{prod_id}"),
-            InlineKeyboardButton(text="5", callback_data=f"qty_5_{prod_id}"),
-            InlineKeyboardButton(text="10", callback_data=f"qty_10_{prod_id}"),
-            InlineKeyboardButton(text="20", callback_data=f"qty_20_{prod_id}")
-        ],
-        [
-            InlineKeyboardButton(text="30", callback_data=f"qty_30_{prod_id}"),
-            InlineKeyboardButton(text="50", callback_data=f"qty_50_{prod_id}"),
-            InlineKeyboardButton(text="100", callback_data=f"qty_100_{prod_id}")
-        ],
-        [InlineKeyboardButton(text="🎉 Custom Quantity", callback_data=f"custom_qty_{prod_id}")],
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data="menu_buy")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await show_quantity_selector(callback, prod_id, 1)
 
-# 🚀 ব্রডকাস্ট থেকে ক্লিক করলে এই হ্যান্ডলারটি কাজ করবে (মেসেজ এডিট না করে নতুন মেসেজ সেন্ড করবে)
-@router.callback_query(F.data.startswith("bcbuy_"))
-async def broadcast_buy_redirect(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    prod_id = callback.data.split("_", 1)[1]
-    
-    # 🚀 ফায়ারবেস থেকে নির্দিষ্ট প্রোডাক্টের ডাটা আনা
-    product = await get_product(prod_id)
-    
-    if not product:
-        await callback.answer("❌ Error: Product not found or deleted!", show_alert=True)
-        return
-    
-    text = (
-        "⚠️ <b>Enter quantity</b>\n"
-        f"How many <b>{product['name']}</b> would you like to buy\n\n"
-        "🎉 <b>Bulk Discount Offers</b>\n"
-        f"✅ Buy 1 - 10 → ${product['price']} each\n"
-        f"✅ Buy 11 - 50 → ${round(product['price'] * 0.9, 2)} each\n"
-        f"✅ Buy 51+ → ${round(product['price'] * 0.8, 2)} each"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="1", callback_data=f"qty_1_{prod_id}"),
-            InlineKeyboardButton(text="5", callback_data=f"qty_5_{prod_id}"),
-            InlineKeyboardButton(text="10", callback_data=f"qty_10_{prod_id}"),
-            InlineKeyboardButton(text="20", callback_data=f"qty_20_{prod_id}")
-        ],
-        [
-            InlineKeyboardButton(text="30", callback_data=f"qty_30_{prod_id}"),
-            InlineKeyboardButton(text="50", callback_data=f"qty_50_{prod_id}"),
-            InlineKeyboardButton(text="100", callback_data=f"qty_100_{prod_id}")
-        ],
-        [InlineKeyboardButton(text="🎉 Custom Quantity", callback_data=f"custom_qty_{prod_id}")],
-        [InlineKeyboardButton(text="◀️ Go Back to Shop", callback_data="menu_buy")]
-    ])
-    await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-    await callback.answer()
+@router.callback_query(F.data.startswith("setqty_"))
+async def update_quantity(callback: CallbackQuery):
+    _, qty_str, prod_id = callback.data.split("_")
+    qty = int(qty_str)
+    if qty < 1: qty = 1
+    await show_quantity_selector(callback, prod_id, qty)
 
-@router.callback_query(F.data.startswith("qty_"))
-async def confirm_order(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    qty = int(parts[1])
-    prod_id = "_".join(parts[2:]) 
-    
-    # 🚀 ফায়ারবেস থেকে লাইভ ডাটা চেক করা
+async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int):
     product = await get_product(prod_id)
     if not product:
-        await callback.answer("❌ Error: Product not found!", show_alert=True)
-        return
+        return await callback.answer("❌ Error: Product not found!", show_alert=True)
     
-    # স্টক চেক করা
-    if qty > product['stock']:
-        await callback.answer(f"⚠️ Only {product['stock']} items left in stock!", show_alert=True)
-        return
-    
-    base_price = product['price']
-    if 1 <= qty <= 10: unit_price = base_price
-    elif 11 <= qty <= 50: unit_price = round(base_price * 0.9, 2)
-    else: unit_price = round(base_price * 0.8, 2)
-        
-    total_price = round(unit_price * qty, 2)
+    total_price = round(product['price'] * qty, 2)
+    cat = product.get('category', 'vpn')
     
     text = (
-        "🛒 <b>Order Confirmation</b>\n\n"
+        f"🛒 <b>Order Summary</b>\n\n"
         f"📦 <b>Product:</b> {product['name']}\n"
-        f"🔢 <b>Quantity:</b> {qty}\n"
-        f"💲 <b>Price per item:</b> ${unit_price}\n"
+        f"💲 <b>Unit Price:</b> ${product['price']}\n"
         "➖➖➖➖➖➖➖➖➖➖\n"
-        f"💰 <b>Total Amount:</b> ${total_price}\n\n"
-        "Please confirm your purchase below."
+        f"🔢 <b>Quantity:</b> {qty}\n"
+        f"💰 <b>Total Price:</b> ${total_price}\n\n"
+        "<i>Use the + and - buttons to adjust quantity:</i>"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}")],
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data=f"buy_{prod_id}")]
+        [
+            InlineKeyboardButton(text="➖", callback_data=f"setqty_{qty-1}_{prod_id}"),
+            InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty"),
+            InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}")
+        ],
+        [InlineKeyboardButton(text="✅ Confirm & Order", callback_data=f"pay_{qty}_{prod_id}")],
+        [InlineKeyboardButton(text="◀️ Back", callback_data=f"showcat_{cat}")]
     ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except:
+        pass # কোয়ান্টিটি সেম থাকলে টেলিগ্রাম এরর দেয়, সেটা ইগনোর করা হলো
 
-@router.callback_query(F.data.startswith("custom_qty_"))
-async def custom_quantity_start(callback: CallbackQuery, state: FSMContext):
-    prod_id = callback.data.split("_", 2)[2]
-    await state.set_state(OrderState.waiting_for_quantity)
-    await state.update_data(product_id=prod_id)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Cancel Typing", callback_data=f"buy_{prod_id}")]
-    ])
-    await callback.message.answer("⌨️ <b>Please type the quantity you want to buy (e.g., 25):</b>", reply_markup=keyboard, parse_mode="HTML")
-    await callback.answer()
-
-@router.message(OrderState.waiting_for_quantity)
-async def process_custom_quantity(message: Message, state: FSMContext):
-    user_data = await state.get_data()
-    prod_id = user_data.get("product_id")
-    
-    # 🚀 ফায়ারবেস থেকে লাইভ ডাটা চেক করা
-    product = await get_product(prod_id)
-    
-    if not message.text.isdigit():
-        await message.answer("⚠️ Please enter a valid number (e.g., 25). Try again:")
-        return
-        
-    qty = int(message.text)
-    if qty <= 0:
-        await message.answer("⚠️ Quantity must be greater than 0. Try again:")
-        return
-    if qty > product['stock']:
-        await message.answer(f"⚠️ We only have {product['stock']} items in stock. Try a smaller number:")
-        return
-
-    await state.clear()
-    
-    base_price = product['price']
-    if 1 <= qty <= 10: unit_price = base_price
-    elif 11 <= qty <= 50: unit_price = round(base_price * 0.9, 2)
-    else: unit_price = round(base_price * 0.8, 2)
-        
-    total_price = round(unit_price * qty, 2)
-    
-    text = (
-        "🛒 <b>Order Confirmation</b>\n\n"
-        f"📦 <b>Product:</b> {product['name']}\n"
-        f"🔢 <b>Quantity:</b> {qty}\n"
-        f"💲 <b>Price per item:</b> ${unit_price}\n"
-        "➖➖➖➖➖➖➖➖➖➖\n"
-        f"💰 <b>Total Amount:</b> ${total_price}\n\n"
-        "Please confirm your purchase below."
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}")],
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data=f"buy_{prod_id}")]
-    ])
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+@router.callback_query(F.data == "ignore_qty")
+async def ignore_qty_click(callback: CallbackQuery):
+    await callback.answer("Use + or - to change quantity.")
