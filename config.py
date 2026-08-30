@@ -6,7 +6,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN") # আপনার আসল টোকে
 BOT_USERNAME = "TastajiBot" # (এখানে আপনার বটের ইউজারনেম বসিয়ে নেবেন)
 
 # আপনার চ্যানেল এবং গ্রুপের ইউজারনেম
-REQUIRED_CHANNELS = ["@tast1g", "@tast2g", "@tastgu"]
+REQUIRED_CHANNELS = ["@tast1g", "@omni_sub", "@OmniSubCSupport"]
 
 # Environment Variable থেকে অ্যাডমিন আইডি নেওয়া হচ্ছে
 admin_id_env = os.environ.get("ADMIN_ID")
@@ -19,7 +19,7 @@ else:
 
 # 🚀 নতুন সেটিংস (আপনার লিংকগুলো এখানে বসাবেন)
 YOUTUBE_LINK = "https://youtube.com/@AjimAhmed"
-SUPPORT_USERNAME = "https://t.me/AjimAhmed"
+SUPPORT_USERNAME = "https://t.me/OmniSub_Support"
 
 # 🚀 রেফারেল বোনাস (অ্যাডমিন হিসেবে আপনি যখন খুশি এটা চেঞ্জ করতে পারবেন)
 REFERRAL_BONUS = 0.05 # প্রতি রেফারে কত ডলার/টাকা পাবে তা এখানে সেট করবেন
