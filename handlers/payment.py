@@ -1,4 +1,5 @@
 # handlers/payment.py
+import datetime # 🚀 অটো-ডিলিট (TTL) এর জন্য datetime ইমপোর্ট করা হলো
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from firebase_admin import firestore
@@ -58,6 +59,9 @@ async def process_payment(callback: CallbackQuery):
     for item in delivered_items_list:
         delivered_items_text += f"🔑 <code>{item}</code>\n"
 
+    # 🚀 অটো-ডিলিট করার জন্য বর্তমান সময় থেকে ৩০ দিন পরের একটা ডেট তৈরি করা
+    expire_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
+
     # 🚀 ফায়ারবেসে সবকিছু একসাথে আপডেট করা (Batch Update)
     batch = db.batch()
     
@@ -84,7 +88,8 @@ async def process_payment(callback: CallbackQuery):
         'qty': qty,
         'total_price': total_price,
         'items_delivered': delivered_items_list,
-        'timestamp': firestore.SERVER_TIMESTAMP
+        'timestamp': firestore.SERVER_TIMESTAMP,
+        'expire_at': expire_time  # 🚀 এই ফিল্ডটি ফায়ারবেসকে বলে দেবে কখন ডিলিট করতে হবে
     })
     
     # সব আপডেট একসাথে কমিট করা
