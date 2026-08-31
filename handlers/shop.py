@@ -26,7 +26,7 @@ async def show_products(callback: CallbackQuery):
     if products:
         for pid, details in products.items():
             # ফুল-উইডথ (এক লাইনে একটা) বাটন
-            btn_text = f"💎 {details['name']} - ${details['price']}"
+            btn_text = f"{details['name']} - ${details['price']}"
             keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"buy_{pid}")])
         text = f"📂 <b>{cat.upper()} Products</b>\n\nSelect a product to proceed:"
     else:
