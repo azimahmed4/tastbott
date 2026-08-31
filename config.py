@@ -3,7 +3,7 @@ import os
 BOT_TOKEN = os.environ.get("BOT_TOKEN") # আপনার আসল টোকেনটি এখানে দেবেন
 
 # 🚀 আপনার বটের ইউজারনেম দিন (রেফারেল লিংকের জন্য, @ ছাড়া)
-BOT_USERNAME = "TastajiBot" # (এখানে আপনার বটের ইউজারনেম বসিয়ে নেবেন)
+BOT_USERNAME = "OmniSubBot" # (এখানে আপনার বটের ইউজারনেম বসিয়ে নেবেন)
 
 # আপনার চ্যানেল এবং গ্রুপের ইউজারনেম
 REQUIRED_CHANNELS = ["@tast1g", "@omni_sub", "@OmniSubCSupport"]  
