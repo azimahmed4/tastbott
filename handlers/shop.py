@@ -65,11 +65,11 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     # 🚀 ২ কলাম লেআউট লজিক (image_6f198c.png এর মতো)
     for i in range(0, len(current_products), 2):
         pid1, details1 = current_products[i]
-        row = [InlineKeyboardButton(text=f"🟢 {details1['name']}", callback_data=f"buy_{pid1}")]
+        row = [InlineKeyboardButton(text=f" {details1['name']}", callback_data=f"buy_{pid1}")]
         
         if i + 1 < len(current_products):
             pid2, details2 = current_products[i+1]
-            row.append(InlineKeyboardButton(text=f"🟢 {details2['name']}", callback_data=f"buy_{pid2}"))
+            row.append(InlineKeyboardButton(text=f" {details2['name']}", callback_data=f"buy_{pid2}"))
         keyboard.append(row)
         
     # 🚀 পেজিনেশন বাটন (Next/Back)
