@@ -130,7 +130,6 @@ async def view_single_deposit(callback: CallbackQuery):
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🚀 ডিরেক্ট ডিপোজিট নোটিফিকেশন থেকে অ্যাকশন নিলে মেসেজ ডিলিট (ভ্যানিশ) হবে
 @router.callback_query(F.data.startswith("appdep_") | F.data.startswith("rejdep_"))
 async def process_deposit(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -163,7 +162,6 @@ async def process_deposit(callback: CallbackQuery, bot: Bot):
         except: pass
         await callback.answer("❌ Deposit Rejected!", show_alert=True)
         
-    # 🚀 মেসেজটি অ্যাডমিন প্যানেল/চ্যাট থেকে ভ্যানিশ হয়ে যাবে
     await callback.message.delete()
 
 # ==========================================
@@ -217,13 +215,11 @@ async def view_single_order(callback: CallbackQuery):
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🚀 ডিরেক্ট মেসেজ থেকে ডেলিভারি বাটনে ক্লিক করলে
 @router.callback_query(F.data.startswith("deliver_"))
 async def start_delivery(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
     order_id = callback.data.split("_")[1]
     
-    # অ্যাডমিনকে ডেটা ইনপুট করার জন্য বলা হচ্ছে
     prompt = await callback.message.edit_text(
         "📝 <b>Delivery Required!</b>\n\nPlease send the access key, account details, or instructions for this order below:", 
         parse_mode="HTML",
@@ -250,7 +246,6 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     
     if not db: return
     
-    # অর্ডার ফেচ করা
     doc_ref = db.collection('pending_orders').document(order_id)
     doc = doc_ref.get()
     
@@ -258,7 +253,6 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         data = doc.to_dict()
         user_id = data.get('user_id')
         
-        # ১. ইউজারের কাছে সুন্দর করে সাজানো মেসেজ পাঠানো
         delivery_text = (
             "🎉 <b>Order Successfully Fulfilled!</b>\n\n"
             f"📦 <b>Product:</b> {data.get('product_name')}\n"
@@ -272,32 +266,28 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         try:
             await bot.send_message(user_id, delivery_text, parse_mode="HTML")
         except Exception:
-            pass # User might have blocked the bot
+            pass
         
-        # ২. হিস্ট্রি হিসেবে 'orders' কালেকশনে সেভ করা
         db.collection('orders').document(order_id).set({
             'user_id': user_id,
             'product_id': data.get('product_id'),
             'product_name': data.get('product_name'),
             'qty': data.get('qty'),
             'total_price': data.get('total_price'),
-            'items_delivered': [admin_key], # প্রোফাইল ফাইলের জন্য Array হিসেবে রাখা হলো
+            'items_delivered': [admin_key], 
             'timestamp': firestore.SERVER_TIMESTAMP
         })
         
-        # ৩. পেন্ডিং অর্ডার ডিলিট করা
         doc_ref.delete()
         
     await state.clear()
     
-    # 🚀 অ্যাডমিনের পাঠানো মেসেজ এবং প্রম্পট দুটোই ডিলিট (ভ্যানিশ) করে দেওয়া
     try:
         await message.delete()
         await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
     except Exception:
         pass
 
-# 🚀 রিফান্ড এবং রিজেক্ট সিস্টেম
 @router.callback_query(F.data.startswith("reford_"))
 async def refund_order(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -311,7 +301,6 @@ async def refund_order(callback: CallbackQuery, bot: Bot):
         user_id = data.get('user_id')
         total_price = data.get('total_price')
         
-        # ব্যালেন্স ফেরত দেওয়া
         db.collection('users').document(str(user_id)).update({
             'balance': firestore.Increment(total_price),
             'total_spent': firestore.Increment(-total_price)
@@ -326,28 +315,53 @@ async def refund_order(callback: CallbackQuery, bot: Bot):
     await callback.answer("Order Rejected & Refunded!", show_alert=True)
 
 # ==========================================
-# 🛒 Manage Products (No Stock)
+# 🛒 Manage Products (Categorized & No Stock)
 # ==========================================
 @router.callback_query(F.data == "admin_products")
 async def manage_products_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     if not is_admin(callback.from_user.id): return
     
-    # এখানে সমস্ত প্রোডাক্ট ফেচ করে লিস্ট দেখানো হচ্ছে
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🌐 VPN", callback_data="admin_cat_vpn"),
+            InlineKeyboardButton(text="🛡️ Proxy", callback_data="admin_cat_proxy")
+        ],
+        [
+            InlineKeyboardButton(text="🎟️ Premium", callback_data="admin_cat_sub"),
+            InlineKeyboardButton(text="🤖 AI Service", callback_data="admin_cat_ai")
+        ],
+        [InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product")],
+        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]
+    ])
+    await callback.message.edit_text("📂 <b>Manage Products - Categories</b>\n\nSelect a category to view or edit products:", reply_markup=keyboard, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("admin_cat_"))
+async def show_category_products(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    cat = callback.data.split("_")[2] 
+    
     if not db: return
-    products = {}
-    docs = db.collection('products').stream()
-    for doc in docs:
-        products[doc.id] = doc.to_dict()
-        
+    # 🚀 নির্দিষ্ট ক্যাটাগরির প্রোডাক্ট ফিল্টার করে আনা হচ্ছে
+    docs = db.collection('products').where('category', '==', cat).stream()
+    
     keyboard = []
-    if products:
-        for pid, details in products.items():
-            keyboard.append([InlineKeyboardButton(text=f"{details['name']} | ${details['price']}", callback_data=f"editp|{pid}")])
-            
+    for doc in docs:
+        details = doc.to_dict()
+        pid = doc.id
+        keyboard.append([InlineKeyboardButton(text=f"{details.get('name', 'Unknown')} | ${details.get('price', 0.0)}", callback_data=f"editp|{pid}")])
+        
     keyboard.append([InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product")])
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")])
-    await callback.message.edit_text("📦 <b>Manage Products</b>\n\nClick to edit or delete:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Categories", callback_data="admin_products")])
+    
+    cat_names = {"vpn": "VPN", "proxy": "Proxy", "sub": "Premium", "ai": "AI Service"}
+    display_cat = cat_names.get(cat, cat.upper())
+    
+    text = f"📦 <b>Manage Products - {display_cat}</b>\n\nSelect a product to edit or delete:"
+    if len(keyboard) == 2: # যদি ওই ক্যাটাগরিতে কোনো প্রোডাক্ট না থাকে
+        text = f"⚠️ <b>No products found in {display_cat}.</b>"
+        
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("editp|"))
 async def edit_product_menu(callback: CallbackQuery):
@@ -357,10 +371,12 @@ async def edit_product_menu(callback: CallbackQuery):
     product = await get_product(prod_id)
     if not product: return await callback.answer("❌ Product not found!", show_alert=True)
     
+    cat = product.get('category', 'vpn') # ব্যাক বাটনের জন্য ক্যাটাগরি ডিটেক্ট করা
+    
     text = f"📦 <b>Product Details</b>\n\n🔹 <b>Name:</b> {product.get('name')}\n📂 <b>Category:</b> {product.get('category')}\n💲 <b>Price:</b> ${product.get('price')}"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}")],
-        [InlineKeyboardButton(text="◀️ Back", callback_data="admin_products")]
+        [InlineKeyboardButton(text="◀️ Back to List", callback_data=f"admin_cat_{cat}")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -369,9 +385,16 @@ async def process_delete_product(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
     prod_id = callback.data.split("|")[1]
     
+    # ডিলিট করার পর ইউজারকে সঠিক ক্যাটাগরিতে ফেরত পাঠানোর জন্য
+    product = await get_product(prod_id)
+    cat = product.get('category', 'vpn') if product else 'vpn'
+    
     await delete_product(prod_id)
     await callback.answer("✅ Product deleted!", show_alert=True)
-    await manage_products_menu(callback, FSMContext())
+    
+    # ডিলিট করার পর অটোমেটিক ওই ক্যাটাগরির লিস্ট শো করবে
+    callback.data = f"admin_cat_{cat}"
+    await show_category_products(callback)
 
 # 🚀 নতুন ক্যাটাগরি ভিত্তিক প্রোডাক্ট অ্যাড করা
 @router.callback_query(F.data == "add_new_product")
@@ -380,7 +403,7 @@ async def add_product_category(callback: CallbackQuery, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 VPN", callback_data="setcat_vpn"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="setcat_proxy")],
-        [InlineKeyboardButton(text="🎟️ Subscription", callback_data="setcat_sub"), InlineKeyboardButton(text="🤖 AI Subscription", callback_data="setcat_ai")],
+        [InlineKeyboardButton(text="🎟️ Premium", callback_data="setcat_sub"), InlineKeyboardButton(text="🤖 AI Service", callback_data="setcat_ai")],
         [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_products")]
     ])
     await callback.message.edit_text("📂 <b>Select a Category for the new product:</b>", reply_markup=keyboard, parse_mode="HTML")
