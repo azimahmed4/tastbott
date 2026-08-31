@@ -5,20 +5,15 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-# রেন্ডারের Environment Variable থেকে JSON ডাটা নেওয়া হচ্ছে
 firebase_creds_json = os.environ.get("FIREBASE_CREDENTIALS")
 
-# ডাটাবেস ইনিশিয়ালাইজেশন
 db = None
 if firebase_creds_json:
     try:
         cred_dict = json.loads(firebase_creds_json)
         cred = credentials.Certificate(cred_dict)
-        
-        # একাধিকবার কানেক্ট হওয়া ঠেকাতে চেক করা হচ্ছে
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred)
-            
         db = firestore.client()
         print("✅ Firebase Connected Successfully!")
     except Exception as e:
@@ -29,13 +24,10 @@ else:
 # ==========================================
 # Database Functions - Users
 # ==========================================
-
 async def add_user(user_id: int, username: str, first_name: str, referred_by: int = None):
     if not db: return False
-    
     user_ref = db.collection('users').document(str(user_id))
     doc = user_ref.get()
-    
     if not doc.exists:
         user_data = {
             'user_id': user_id,
@@ -48,37 +40,51 @@ async def add_user(user_id: int, username: str, first_name: str, referred_by: in
             'total_spent': 0.0
         }
         user_ref.set(user_data)
-        
         if referred_by and str(referred_by) != str(user_id):
             referrer_ref = db.collection('users').document(str(referred_by))
-            referrer_doc = referrer_ref.get()
-            if referrer_doc.exists:
-                referrer_ref.update({
-                    'total_referrals': firestore.Increment(1)
-                })
+            if referrer_ref.get().exists:
+                referrer_ref.update({'total_referrals': firestore.Increment(1)})
         return True
     return False
 
 async def get_user(user_id: int):
     if not db: return None
-    user_ref = db.collection('users').document(str(user_id))
-    doc = user_ref.get()
-    if doc.exists:
-        return doc.to_dict()
-    return None
+    doc = db.collection('users').document(str(user_id)).get()
+    return doc.to_dict() if doc.exists else None
 
 # ==========================================
-# Database Functions - Shop & Products (No Stock)
+# Database Functions - Sub-Categories
 # ==========================================
-
-async def add_or_update_product(product_id: str, category: str, name: str, price: float):
-    """স্টক ছাড়াই ক্যাটাগরিভিত্তিক প্রোডাক্ট সেভ করবে"""
+async def add_subcategory(category: str, name: str):
     if not db: return False
-    
+    subcat_id = f"{category}_{name.lower().replace(' ', '_')}"
+    db.collection('subcategories').document(subcat_id).set({
+        'subcat_id': subcat_id,
+        'category': category,
+        'name': name
+    })
+    return True
+
+async def get_subcategories(category: str):
+    if not db: return []
+    docs = db.collection('subcategories').where(filter=FieldFilter('category', '==', category)).stream()
+    return [doc.to_dict() for doc in docs]
+
+async def delete_subcategory(subcat_id: str):
+    if not db: return False
+    db.collection('subcategories').document(subcat_id).delete()
+    return True
+
+# ==========================================
+# Database Functions - Shop & Products
+# ==========================================
+async def add_or_update_product(product_id: str, category: str, sub_category: str, name: str, price: float):
+    if not db: return False
     product_ref = db.collection('products').document(product_id)
     product_data = {
         'product_id': product_id,
         'category': category,
+        'sub_category': sub_category, # নতুন ফিল্ড
         'name': name,
         'price': float(price),
         'updated_at': firestore.SERVER_TIMESTAMP
@@ -86,23 +92,21 @@ async def add_or_update_product(product_id: str, category: str, name: str, price
     product_ref.set(product_data, merge=True)
     return True
 
-async def get_products_by_category(category: str):
-    """নির্দিষ্ট ক্যাটাগরির প্রোডাক্টগুলো আনবে"""
+async def get_products_by_category(category: str, sub_category: str = None):
     if not db: return {}
+    query = db.collection('products').where(filter=FieldFilter('category', '==', category))
+    if sub_category and sub_category != "none":
+        query = query.where(filter=FieldFilter('sub_category', '==', sub_category))
     
     products = {}
-    docs = db.collection('products').where(filter=FieldFilter('category', '==', category)).stream()
-    for doc in docs:
+    for doc in query.stream():
         products[doc.id] = doc.to_dict()
     return products
 
 async def get_product(product_id: str):
     if not db: return None
-    product_ref = db.collection('products').document(product_id)
-    doc = product_ref.get()
-    if doc.exists:
-        return doc.to_dict()
-    return None
+    doc = db.collection('products').document(product_id).get()
+    return doc.to_dict() if doc.exists else None
 
 async def delete_product(product_id: str):
     if not db: return False
@@ -112,13 +116,10 @@ async def delete_product(product_id: str):
 # ==========================================
 # Database Functions - Pending Orders & Deposits
 # ==========================================
-
 async def create_pending_order(user_id: int, product_id: str, product_name: str, qty: int, total_price: float):
-    """ম্যানুয়াল ডেলিভারির জন্য পেন্ডিং অর্ডার ক্রিয়েট করবে"""
     if not db: return None
-    
     order_ref = db.collection('pending_orders').document()
-    order_data = {
+    order_ref.set({
         'order_id': order_ref.id,
         'user_id': user_id,
         'product_id': product_id,
@@ -127,16 +128,13 @@ async def create_pending_order(user_id: int, product_id: str, product_name: str,
         'total_price': total_price,
         'status': 'pending',
         'timestamp': firestore.SERVER_TIMESTAMP
-    }
-    order_ref.set(order_data)
+    })
     return order_ref.id
 
 async def create_pending_deposit(user_id: int, amount: float, method: str, sender_number: str, trx_id: str):
-    """ম্যানুয়াল অ্যাপ্রুভালের জন্য ডিপোজিট রিকোয়েস্ট সেভ করবে"""
     if not db: return None
-    
     deposit_ref = db.collection('pending_deposits').document()
-    deposit_data = {
+    deposit_ref.set({
         'deposit_id': deposit_ref.id,
         'user_id': user_id,
         'amount': float(amount),
@@ -145,6 +143,5 @@ async def create_pending_deposit(user_id: int, amount: float, method: str, sende
         'trx_id': trx_id,
         'status': 'pending',
         'timestamp': firestore.SERVER_TIMESTAMP
-    }
-    deposit_ref.set(deposit_data)
+    })
     return deposit_ref.id
