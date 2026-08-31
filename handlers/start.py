@@ -99,7 +99,7 @@ async def verify_join(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 await process_referral_reward(bot, user_id, referrer_id)
                 
         await state.clear()
-        welcome_text = f"Welcome to OmniSub Store ! 🚀\nHello {first_name}, please select an option below:"
+        welcome_text = f"Welcome to OmniSub Store! 🚀\nHello {first_name}, please select an option below:"
         await callback.message.edit_text(welcome_text, reply_markup=get_main_menu())
     else:
         await callback.answer("❌ You haven't joined all channels/groups yet! Please join first.", show_alert=True)
@@ -108,5 +108,5 @@ async def verify_join(callback: CallbackQuery, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    welcome_text = f"Welcome to AIVerse X Hub! 🚀\nHello {callback.from_user.first_name}, please select an option below:"
+    welcome_text = f"Welcome to OmniSub Store! 🚀\nHello {callback.from_user.first_name}, please select an option below:"
     await callback.message.edit_text(welcome_text, reply_markup=get_main_menu())
