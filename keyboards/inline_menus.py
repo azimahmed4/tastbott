@@ -9,7 +9,7 @@ def get_main_menu():
         ],
         [
             InlineKeyboardButton(text="🔔 How to use", callback_data="menu_help"),
-            InlineKeyboardButton(text="💎 Wallet", callback_data="menu_wallet")
+            InlineKeyboardButton(text="💰 Wallet", callback_data="menu_wallet")
         ],
         [
             InlineKeyboardButton(text="🎉 Refer & Earn", callback_data="menu_refer"),
@@ -23,8 +23,8 @@ def get_main_menu():
 
 def get_join_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Join Channel 1", url="https://t.me/tast1g")],
-        [InlineKeyboardButton(text="📢 Join Channel 2", url="https://t.me/tast2g")],
-        [InlineKeyboardButton(text="👥 Join Group", url="https://t.me/tastgu")], 
+        [InlineKeyboardButton(text="📢 OmniSub Updates & Offers", url="https://t.me/omni_sub")],
+        [InlineKeyboardButton(text="📢 𝑪𝑹𝒀𝑷𝑻𝑶 𝑬𝑽𝑬𝑵𝑻 24", url="https://t.me/CRYPTOEVENT24")],
+        [InlineKeyboardButton(text="👥 OmniSub Community & Support", url="https://t.me/OmniSubCSupport")], 
         [InlineKeyboardButton(text="✅ Verify", callback_data="check_join")]
     ])
