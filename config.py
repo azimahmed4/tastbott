@@ -6,7 +6,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN") # আপনার আসল টোকে
 BOT_USERNAME = "OmniSubBot" # (এখানে আপনার বটের ইউজারনেম বসিয়ে নেবেন)
 
 # আপনার চ্যানেল এবং গ্রুপের ইউজারনেম
-REQUIRED_CHANNELS = ["@tast1g", "@omni_sub", "@OmniSubCSupport"]  
+REQUIRED_CHANNELS = ["@CRYPTOEVENT24", "@omni_sub", "@OmniSubCSupport"]  
 
 
 # 🚀 মাল্টিপল অ্যাডমিন সিস্টেম (কমা দিয়ে একাধিক আইডি দেওয়া যাবে)
