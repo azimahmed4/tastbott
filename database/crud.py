@@ -1,4 +1,3 @@
-# database/crud.py
 import os
 import json
 import firebase_admin
@@ -84,7 +83,7 @@ async def add_or_update_product(product_id: str, category: str, sub_category: st
     product_data = {
         'product_id': product_id,
         'category': category,
-        'sub_category': sub_category, # নতুন ফিল্ড
+        'sub_category': sub_category, 
         'name': name,
         'price': float(price),
         'updated_at': firestore.SERVER_TIMESTAMP
