@@ -1,11 +1,10 @@
-# handlers/shop.py
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database.crud import get_products_by_category, get_product, get_subcategories
 
 router = Router()
 
-ITEMS_PER_PAGE = 10 # প্রতি পেজে সর্বোচ্চ ১০টি প্রোডাক্ট (৫ লাইন x ২ কলাম)
+ITEMS_PER_PAGE = 10 
 
 @router.callback_query(F.data == "menu_buy")
 async def show_categories(callback: CallbackQuery):
@@ -30,26 +29,23 @@ async def show_subcategories_or_products(callback: CallbackQuery):
     if cat in ['vpn', 'proxy']:
         subcats = await get_subcategories(cat)
         keyboard = []
-        # ২ কলামে সাব-ক্যাটাগরি সাজানো
         for i in range(0, len(subcats), 2):
-            row = [InlineKeyboardButton(text=f"📅 {subcats[i]['name']}", callback_data=f"shop_p_{cat}_{subcats[i]['subcat_id']}_0")]
+            row = [InlineKeyboardButton(text=f"📅 {subcats[i]['name']}", callback_data=f"shop_p|{cat}|{subcats[i]['subcat_id']}|0")]
             if i + 1 < len(subcats):
-                row.append(InlineKeyboardButton(text=f"📅 {subcats[i+1]['name']}", callback_data=f"shop_p_{cat}_{subcats[i+1]['subcat_id']}_0"))
+                row.append(InlineKeyboardButton(text=f"📅 {subcats[i+1]['name']}", callback_data=f"shop_p|{cat}|{subcats[i+1]['subcat_id']}|0"))
             keyboard.append(row)
             
         keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="menu_buy")])
         await callback.message.edit_text(f"📂 <b>Select Validity/Type:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     else:
-        # প্রিমিয়াম এবং এআই এর জন্য সরাসরি প্রোডাক্ট লিস্ট (page 0)
         await display_products(callback, cat, "none", 0)
 
-# পেজিনেশন হ্যান্ডলার
-@router.callback_query(F.data.startswith("shop_p_"))
+@router.callback_query(F.data.startswith("shop_p|"))
 async def handle_pagination(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    cat = parts[2]
-    subcat = parts[3]
-    page = int(parts[4])
+    parts = callback.data.split("|")
+    cat = parts[1]
+    subcat = parts[2]
+    page = int(parts[3])
     await display_products(callback, cat, subcat, page)
 
 async def display_products(callback: CallbackQuery, cat: str, subcat: str, page: int):
@@ -62,22 +58,20 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     current_products = products_list[start_idx:end_idx]
     
     keyboard = []
-    # 🚀 ২ কলাম লেআউট লজিক (image_6f198c.png এর মতো)
     for i in range(0, len(current_products), 2):
         pid1, details1 = current_products[i]
-        row = [InlineKeyboardButton(text=f" {details1['name']}", callback_data=f"buy_{pid1}")]
+        row = [InlineKeyboardButton(text=f"{details1['name']}", callback_data=f"buy_{pid1}")]
         
         if i + 1 < len(current_products):
             pid2, details2 = current_products[i+1]
-            row.append(InlineKeyboardButton(text=f" {details2['name']}", callback_data=f"buy_{pid2}"))
+            row.append(InlineKeyboardButton(text=f"{details2['name']}", callback_data=f"buy_{pid2}"))
         keyboard.append(row)
         
-    # 🚀 পেজিনেশন বাটন (Next/Back)
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"shop_p_{cat}_{subcat}_{page-1}"))
+        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"shop_p|{cat}|{subcat}|{page-1}"))
     if end_idx < total_products:
-        nav_row.append(InlineKeyboardButton(text="➡️ Next", callback_data=f"shop_p_{cat}_{subcat}_{page+1}"))
+        nav_row.append(InlineKeyboardButton(text="➡️ Next", callback_data=f"shop_p|{cat}|{subcat}|{page+1}"))
     
     if nav_row:
         keyboard.append(nav_row)
@@ -88,4 +82,55 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     text = "📦 <b>Select a Package:</b>" if current_products else "⚠️ <b>No products found here.</b>"
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
-# (কোয়ান্টিটি স্লাইডারের buy_ এবং setqty_ ফাংশনগুলো আগের মতোই থাকবে, স্পেস কমানোর জন্য স্কিপ করা হলো)
+@router.callback_query(F.data.startswith("buy_"))
+async def start_buy(callback: CallbackQuery):
+    prod_id = callback.data.split("_", 1)[1]
+    await show_quantity_selector(callback, prod_id, 1)
+
+@router.callback_query(F.data.startswith("setqty_"))
+async def update_quantity(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    qty = int(parts[1])
+    prod_id = "_".join(parts[2:])
+    if qty < 1: qty = 1
+    await show_quantity_selector(callback, prod_id, qty)
+
+async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int):
+    product = await get_product(prod_id)
+    if not product:
+        return await callback.answer("❌ Error: Product not found!", show_alert=True)
+    
+    total_price = round(product['price'] * qty, 2)
+    cat = product.get('category', 'vpn')
+    subcat = product.get('sub_category', 'none')
+    
+    back_btn = f"shop_p|{cat}|{subcat}|0" if subcat and subcat != "none" else f"showcat_{cat}"
+    
+    text = (
+        f"🛒 <b>Order Summary</b>\n\n"
+        f"📦 <b>Product:</b> {product['name']}\n"
+        f"💲 <b>Unit Price:</b> ${product['price']}\n"
+        "➖➖➖➖➖➖➖➖➖➖\n"
+        f"🔢 <b>Quantity:</b> {qty}\n"
+        f"💰 <b>Total Price:</b> ${total_price}\n\n"
+        "<i>Use the + and - buttons to adjust quantity:</i>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➖", callback_data=f"setqty_{qty-1}_{prod_id}"),
+            InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty"),
+            InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}")
+        ],
+        [InlineKeyboardButton(text="✅ Confirm & Order", callback_data=f"pay_{qty}_{prod_id}")],
+        [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn)]
+    ])
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except:
+        pass 
+
+@router.callback_query(F.data == "ignore_qty")
+async def ignore_qty_click(callback: CallbackQuery):
+    await callback.answer("Use + or - to change quantity.")
