@@ -1,48 +1,55 @@
 # ==========================================
 # File: handlers/wallet.py
-# Purpose: ডিরেক্ট ডিপোজিট সিস্টেম (Crypto Auto Verify এবং Local Payment)
+# Purpose: ডিরেক্ট ডিপোজিট সিস্টেম (Binance API Auto Verify এবং Local Payment)
 # ==========================================
-import random
+import os
 import asyncio
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
+from binance.client import Client  # 🚀 Binance API লাইব্রেরি
 
-from database.crud import db, get_user, create_pending_deposit
+from database.crud import db, create_pending_deposit
 from config import ADMIN_IDS
-# 🚀 নতুন ইমেইল পার্সার ইমপোর্ট করা হলো
-from utils.email_parser import check_crypto_payment
 
 router = Router()
 
 # ==========================================
-# ⚙️ PAYMENT METHODS CONFIGURATION
+# ⚙️ API KEYS & METHODS CONFIGURATION
 # ==========================================
+BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
+# 🚀 API Key ঠিকমতো লোড হয়েছে কি না, তা Render-এর Logs-এ প্রিন্ট করে দেখাবে
+if BINANCE_API_KEY and BINANCE_SECRET_KEY:
+    masked_key = BINANCE_API_KEY[:5] + "********"
+    print(f"✅ [SUCCESS] Binance API Keys loaded correctly! (Key: {masked_key})")
+else:
+    print("⚠️ [WARNING] Binance API Keys are MISSING! Binance Auto-Verify will not work.")
+
 CRYPTO_METHODS = {
-    "binance": {"name": "Binance Pay", "pay_id": "1126025983"},
-    "bybit": {"name": "Bybit Pay", "pay_id": "9876***54321"}
+    "binance": {"name": "🟡 Binance Pay", "pay_id": "1126025983"},
+    "bybit": {"name": "🟠 Bybit Pay", "pay_id": "9876***54321"}
 }
 
 LOCAL_METHODS = {
-    "bkash": {"name": "bKash", "number": "01308618044"},
-    "nagad": {"name": "Nagad", "number": "01308618044"},
-    "rocket": {"name": "Rocket", "number": "01308618044"}
+    "bkash": {"name": "🦅 bKash", "number": "01308618044"},
+    "nagad": {"name": "🔴 Nagad", "number": "01308618044"},
+    "rocket": {"name": "🚀 Rocket", "number": "01308618044"}
 }
 
 # ==========================================
 # 📌 States
 # ==========================================
 class DepositState(StatesGroup):
-    waiting_for_amount = State()         # লোকাল পেমেন্টের অ্যামাউন্ট
-    waiting_for_crypto_amount = State()  # 🚀 ক্রিপ্টোর অ্যামাউন্টের জন্য নতুন স্টেট
+    waiting_for_amount = State()         
     waiting_for_sender = State()
-    waiting_for_trxid = State()
+    waiting_for_trxid = State()          # Local-এর জন্য
+    waiting_for_crypto_trxid = State()   # 🚀 Crypto-এর জন্য (সরাসরি TrxID চাইবে)
     payment_method = None  
     method_key = None      
     method_type = None     
-    expected_amount = None # 🚀 ইউনিক ফ্র্যাকশনাল অ্যামাউন্ট সেভ রাখার জন্য
 
 # ==========================================
 # 🏦 DIRECT DEPOSIT MENU 
@@ -50,7 +57,6 @@ class DepositState(StatesGroup):
 @router.callback_query(F.data == "menu_wallet")
 async def show_deposit_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear() 
-    
     keyboard = [
         [
             InlineKeyboardButton(text=CRYPTO_METHODS["binance"]["name"], callback_data="dep_crypto_binance"),
@@ -66,10 +72,7 @@ async def show_deposit_menu(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
     ]
     
-    text = (
-        "🏦 <b>Deposit Funds</b>\n\n"
-        "Choose your preferred payment method below to add funds to your account:"
-    )
+    text = "🏦 <b>Deposit Funds</b>\n\nChoose your preferred payment method below to add funds to your account:"
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 # ==========================================
@@ -81,18 +84,37 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
     m_type = parts[1] 
     m_key = parts[2]  
     
-    # 🚀 Crypto Flow (কত ডলার ডিপোজিট করবে সেটা জানতে চাইবে)
+    # 🚀 Crypto Flow (Binance)
     if m_type == "crypto":
         method_info = CRYPTO_METHODS.get(m_key, {})
         method_name = method_info.get("name", "Crypto Payment")
+        pay_id = method_info.get("pay_id", "Unknown")
         
         await state.update_data(payment_method=method_name, method_key=m_key, method_type="crypto")
-        await state.set_state(DepositState.waiting_for_crypto_amount)
         
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]])
-        await callback.message.edit_text(f"⚡ <b>{method_name}</b>\n\n<b>How much USDT do you want to deposit?</b>\n<i>(Example: 5)</i>", reply_markup=keyboard, parse_mode="HTML")
+        if m_key == "binance":
+            # বাইনান্সের জন্য সরাসরি TrxID চাইবে
+            await state.set_state(DepositState.waiting_for_crypto_trxid)
+            instruction = (
+                f"⚡ <b>{method_name} (API Auto Verification)</b>\n\n"
+                f"🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n"
+                f"⚠️ <i>Please send USDT to the Pay ID above. After sending, type your <b>Order ID or Transaction ID (TrxID)</b> below:</i>"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]])
+            await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
+            
+        elif m_key == "bybit":
+            # বাইবিটের API আপাতত নেই, তাই লোকাল পেমেন্টের মতো ম্যানুয়াল ফ্লোতে পাঠানো হলো
+            await state.set_state(DepositState.waiting_for_amount)
+            instruction = (
+                f"📱 <b>{method_name} (Manual Verification)</b>\n\n"
+                f"🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n"
+                "⚠️ <b>How much USDT do you want to deposit?</b>\n"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]])
+            await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
         
-    # 🚀 Local Flow (আপনার আগের কোড)
+    # 🚀 Local Flow (bKash, Nagad, Rocket)
     else:
         method_info = LOCAL_METHODS.get(m_key, {})
         method_name = method_info.get("name", "Local Payment")
@@ -110,96 +132,98 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# ⚡ CRYPTO UNIQUE AMOUNT GENERATOR & AUTO-VERIFY
+# ⚡ BINANCE API AUTO VERIFICATION LOGIC
 # ==========================================
-@router.message(DepositState.waiting_for_crypto_amount)
-async def receive_crypto_amount(message: Message, state: FSMContext):
-    """ইউজার অ্যামাউন্ট দিলে র‍্যান্ডম সেন্ট যুক্ত করে পেমেন্ট করতে বলবে"""
-    if not message.text.isdigit():
-        return await message.answer("⚠️ Please enter a valid whole number (e.g., 5).")
+def verify_binance_pay(trx_id: str):
+    """ব্যাকগ্রাউন্ডে বাইনান্সের সার্ভার থেকে পেমেন্ট কনফার্ম করবে"""
+    if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
+        return {"status": "error", "message": "API keys not set on server."}
         
-    base_amount = int(message.text)
-    
-    # 🚀 র‍্যান্ডম ফ্র্যাকশন (১ সেন্ট থেকে ২০ সেন্টের মধ্যে) তৈরি করা
-    fraction = random.randint(1, 20) / 100.0
-    expected_amount = round(base_amount + fraction, 2)
-    
-    await state.update_data(expected_amount=expected_amount)
-    data = await state.get_data()
-    
-    method_name = data['payment_method']
-    pay_id = CRYPTO_METHODS[data['method_key']]['pay_id']
-    
-    text = (
-        f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
-        f"🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n"
-        f"🔹 <b>Amount to Send:</b> <code>{expected_amount}</code> USDT\n\n"
-        f"⚠️ <b>CRITICAL INSTRUCTION:</b>\n"
-        f"You MUST send EXACTLY <b>{expected_amount} USDT</b>. The extra cents ({fraction}) are used to auto-verify your payment.\n\n"
-        f"<i>After sending the exact amount, click the verify button below.</i>"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ I have Paid (Verify)", callback_data="verify_crypto_payment")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]
-    ])
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    try:
+        client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+        # লাস্ট ১০০ টা পে-হিস্ট্রি চেক করবে
+        history = client.get_pay_trade_history(limit=100)
+        
+        if history.get('code') == '000000' and 'data' in history:
+            for tx in history['data']:
+                # ইউজার OrderID বা TransactionID যাই দিক না কেন, ম্যাচ করাবে
+                if tx.get('orderId') == trx_id or tx.get('transactionId') == trx_id:
+                    # পেমেন্ট রিসিভ হয়েছে কি না চেক করা (OUT হলে বাদ)
+                    if tx.get('fundsDetail'):
+                        amount = sum([float(f['amount']) for f in tx['fundsDetail']])
+                    else:
+                        amount = float(tx.get('amount', 0))
+                    
+                    return {"status": "success", "amount": amount, "currency": tx.get('currency')}
+                    
+        return {"status": "failed", "message": "Transaction not found or not yet processed."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
-# ==========================================
-# ⚡ CRYPTO AUTO-VERIFY BUTTON CLICK (FIXED HANG ISSUE)
-# ==========================================
-@router.callback_query(F.data == "verify_crypto_payment")
-async def verify_crypto_payment(callback: CallbackQuery, state: FSMContext):
-    """ভেরিফাই বাটনে ক্লিক করলে ইমেইল পার্সার কল হবে"""
-    data = await state.get_data()
-    expected_amount = data.get("expected_amount")
-    method_key = data.get("method_key")
-    user_id = callback.from_user.id
+@router.message(DepositState.waiting_for_crypto_trxid)
+async def process_binance_trxid(message: Message, state: FSMContext):
+    trx_id = message.text.strip()
+    user_id = message.from_user.id
     
-    # 🚀 টেলিগ্রামকে সাথে সাথে রেসপন্স দেওয়া, যাতে বাটন হ্যাং না করে
-    await callback.answer("⏳ Scanning inbox... Please wait 3-5 seconds.", show_alert=True)
+    # ইউজারকে অপেক্ষার মেসেজ
+    processing_msg = await message.answer("⏳ <b>Communicating with Binance Server...</b>\nPlease wait a few seconds.", parse_mode="HTML")
     
-    # 🚀 ইমেইল স্ক্যানিংকে ব্যাকগ্রাউন্ড থ্রেডে পাঠানো হলো
-    is_paid = await asyncio.to_thread(check_crypto_payment, expected_amount, method_key)
+    # 🚀 API কলটি থ্রেডে পাঠানো হলো যাতে বট হ্যাং না করে
+    result = await asyncio.to_thread(verify_binance_pay, trx_id)
     
-    if is_paid:
+    if result["status"] == "success":
+        amount_usd = result["amount"]
+        currency = result.get("currency", "USDT")
+        
         if db:
-            db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(expected_amount)})
+            # 🚀 সিকিউরিটি চেক: এই TrxID আগে ব্যবহার হয়েছে কি না
+            trx_ref = db.collection('used_trx').document(trx_id)
+            doc = trx_ref.get()
+            
+            if doc.exists:
+                await processing_msg.edit_text("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
+                return
+            
+            # ডাটাবেসে TrxID টা সেভ করে রাখা হলো যাতে দ্বিতীয়বার কেউ ব্যবহার করতে না পারে
+            trx_ref.set({'user_id': user_id, 'amount': amount_usd, 'currency': currency, 'timestamp': firestore.SERVER_TIMESTAMP})
+            
+            # ইউজারের ব্যালেন্সে ডলার অ্যাড
+            db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
         
         success_text = (
-            f"🎉 <b>Payment Verified!</b>\n\n"
-            f"<b>${expected_amount}</b> has been automatically added to your wallet."
+            f"🎉 <b>Binance Payment Verified!</b>\n\n"
+            f"🧾 <b>TrxID:</b> <code>{trx_id}</code>\n"
+            f"💰 <b>Amount:</b> {amount_usd} {currency}\n\n"
+            f"<i>Your balance has been updated automatically.</i>"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Go to Shop", callback_data="menu_buy")]])
-        
-        # মেসেজ এডিট করতে সমস্যা হলে নতুন মেসেজ পাঠাবে
-        try:
-            await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
-        except:
-            await callback.message.delete()
-            await callback.message.answer(success_text, reply_markup=keyboard, parse_mode="HTML")
-            
+        await processing_msg.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
         await state.clear()
+        
     else:
-        # মেইলে পেমেন্ট না পাওয়া গেলে
-        await callback.message.answer("❌ Payment not found! Please wait 1-2 minutes for the confirmation email to arrive at our end, then click verify again.")
+        # পেমেন্ট না পেলে এরর মেসেজ
+        error_msg = result.get('message', 'Transaction not found.')
+        fail_text = f"❌ <b>Verification Failed!</b>\n\n⚠️ {error_msg}\n\nPlease check your TrxID and try again."
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Try Again", callback_data="menu_wallet")]])
+        await processing_msg.edit_text(fail_text, reply_markup=keyboard, parse_mode="HTML")
+        await state.clear()
 
 # ==========================================
-# 📱 LOCAL PAYMENT FLOW (আপনার আগের কোড)
+# 📱 LOCAL PAYMENT & BYBIT MANUAL FLOW
 # ==========================================
 @router.message(DepositState.waiting_for_amount)
 async def receive_amount(message: Message, state: FSMContext):
-    if not message.text.isdigit() or int(message.text) < 20:
-        return await message.answer("⚠️ Please enter a valid amount (Minimum 20 BDT):")
+    if not message.text.replace('.', '', 1).isdigit():
+        return await message.answer("⚠️ Please enter a valid number:")
         
-    await state.update_data(deposit_amount=int(message.text))
+    await state.update_data(deposit_amount=float(message.text))
     await state.set_state(DepositState.waiting_for_sender) 
     
     data = await state.get_data()
     method_name = data.get("payment_method", "Payment")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]])
-    await message.answer(f"📱 <b>Which number will you Send Money from?</b>\n<i>(Type your {method_name} account number below)</i>", reply_markup=keyboard, parse_mode="HTML")
+    await message.answer(f"📱 <b>Which account will you Send from?</b>\n<i>(Type your {method_name} number/ID below)</i>", reply_markup=keyboard, parse_mode="HTML")
 
 @router.message(DepositState.waiting_for_sender)
 async def receive_sender(message: Message, state: FSMContext):
@@ -211,14 +235,19 @@ async def receive_sender(message: Message, state: FSMContext):
     method_name = data.get("payment_method", "Payment")
     method_key = data.get("method_key", "bkash")
     
-    admin_receiving_number = LOCAL_METHODS.get(method_key, {}).get("number", "Unknown")
+    if method_key == "bybit":
+        admin_receiving_number = CRYPTO_METHODS["bybit"]["pay_id"]
+        currency = "USDT"
+    else:
+        admin_receiving_number = LOCAL_METHODS.get(method_key, {}).get("number", "Unknown")
+        currency = "BDT"
     
     instruction = (
         "📱 <b>Payment Instructions</b>\n\n"
-        f"🔹 <b>Method:</b> {method_name} (Send Money)\n"
-        f"🔹 <b>Amount to send:</b> {amount} BDT\n"
-        f"🔹 <b>Send Money To:</b> <code>{admin_receiving_number}</code>\n\n"
-        "⚠️ <i>Please Send Money to the exact number above. After sending, type your <b>Transaction ID (TrxID)</b> below:</i>"
+        f"🔹 <b>Method:</b> {method_name}\n"
+        f"🔹 <b>Amount to send:</b> {amount} {currency}\n"
+        f"🔹 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n"
+        "⚠️ <i>After sending, type your <b>Transaction ID (TrxID)</b> below:</i>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]])
     await message.answer(instruction, reply_markup=keyboard, parse_mode="HTML")
@@ -232,6 +261,7 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     method_name = user_data.get("payment_method")
     amount = user_data.get("deposit_amount", 0) 
     sender_number = user_data.get("sender_number", "Unknown")
+    currency = "USDT" if user_data.get("method_key") == "bybit" else "BDT"
     
     await state.clear()
     
@@ -244,7 +274,7 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
         f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
         f"🏦 <b>Method:</b> {method_name}\n"
         f"📱 <b>Sender:</b> <code>{sender_number}</code>\n"
-        f"💵 <b>Amount:</b> {amount} BDT\n"
+        f"💵 <b>Amount:</b> {amount} {currency}\n"
         f"🧾 <b>TrxID:</b> <code>{trxid}</code>"
     )
     admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -260,7 +290,7 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     pending_text = (
         "⏳ <b>Deposit Request Submitted!</b>\n\n"
         f"🏦 <b>Method:</b> {method_name}\n"
-        f"💵 <b>Amount:</b> {amount} BDT\n"
+        f"💵 <b>Amount:</b> {amount} {currency}\n"
         f"🧾 <b>TrxID:</b> <code>{trxid}</code>\n\n"
         "👨‍💻 <i>Your transaction has been securely sent to the admin. Your account will be updated once approved.</i>"
     )
