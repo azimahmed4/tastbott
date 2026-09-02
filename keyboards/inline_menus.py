@@ -9,7 +9,7 @@ def get_main_menu():
         ],
         [
             InlineKeyboardButton(text="🔔 How to use", callback_data="menu_help"),
-            InlineKeyboardButton(text="💰 Wallet", callback_data="menu_wallet")
+            InlineKeyboardButton(text="🏦 Deposit", callback_data="menu_wallet")
         ],
         [
             InlineKeyboardButton(text="🎉 Refer & Earn", callback_data="menu_refer"),
