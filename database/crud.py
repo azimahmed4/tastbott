@@ -144,3 +144,38 @@ async def create_pending_deposit(user_id: int, amount: float, method: str, sende
         'timestamp': firestore.SERVER_TIMESTAMP
     })
     return deposit_ref.id
+
+# ==========================================
+# 🟢 NEW ADDED FOR REPORT: Database Functions - Deposit History & Reports
+# ==========================================
+async def save_deposit_history(user_id: int, amount: float, method: str, trx_id: str, currency: str):
+    if not db: return False
+    history_ref = db.collection('deposit_history').document(trx_id)
+    history_ref.set({
+        'user_id': user_id,
+        'amount': float(amount),
+        'method': method,
+        'trx_id': trx_id,
+        'currency': currency,
+        'timestamp': firestore.SERVER_TIMESTAMP,
+    })
+    return True
+
+async def get_deposit_statement():
+    if not db: return {}
+    
+    report = {}
+    docs = db.collection('deposit_history').stream()
+    
+    for doc in docs:
+        data = doc.to_dict()
+        method_name = data.get('method', 'Unknown Method')
+        amount = float(data.get('amount', 0.0))
+        currency = data.get('currency', 'USDT')
+        
+        if method_name not in report:
+            report[method_name] = {'amount': 0.0, 'currency': currency}
+            
+        report[method_name]['amount'] += amount
+        
+    return report
