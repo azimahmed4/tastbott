@@ -12,7 +12,8 @@ from firebase_admin import firestore
 
 from config import ADMIN_IDS
 # 🚀 প্রাইস লিস্ট বানানোর জন্য get_products_by_category ইম্পোর্ট করা হয়েছে
-from database.crud import db, get_product, delete_product, add_subcategory, get_subcategories, delete_subcategory, get_products_by_category
+# 🟢 NEW ADDED FOR REPORT: save_deposit_history এবং get_deposit_statement ইমপোর্ট করা হলো
+from database.crud import db, get_product, delete_product, add_subcategory, get_subcategories, delete_subcategory, get_products_by_category, save_deposit_history, get_deposit_statement
 
 router = Router()
 
@@ -32,6 +33,8 @@ def get_admin_menu():
         ],
         # 🚀 নতুন বাটন: এক ক্লিকে প্রাইস লিস্ট বের করার জন্য
         [InlineKeyboardButton(text="📋 Generate Price List", callback_data="admin_price_list")],
+        # 🟢 NEW ADDED FOR REPORT: নতুন বাটন Deposit Report দেখার জন্য
+        [InlineKeyboardButton(text="📊 Deposit Report", callback_data="admin_report")],
         [InlineKeyboardButton(text="📢 Broadcast Message", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin")]
     ])
@@ -82,6 +85,38 @@ async def back_to_admin(callback: CallbackQuery, state: FSMContext):
         except:
             await callback.message.delete()
             await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>", reply_markup=get_admin_menu(), parse_mode="HTML")
+
+# ==========================================
+# 🟢 NEW ADDED FOR REPORT: DEPOSIT STATEMENT PANEL
+# ==========================================
+@router.callback_query(F.data == "admin_report")
+async def show_deposit_report(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    
+    await callback.answer("Generating Report...")
+    report_data = await get_deposit_statement()
+    
+    if not report_data:
+        text = "📊 <b>TOTAL DEPOSIT STATEMENT</b>\n\n⚠️ No deposit history found yet."
+    else:
+        text = "📊 <b>TOTAL DEPOSIT STATEMENT</b>\n\n"
+        total_usd = 0.0
+        
+        for method, details in report_data.items():
+            amount = details['amount']
+            currency = details['currency']
+            text += f"🔹 <b>{method}:</b> {amount:,.2f} {currency}\n"
+            
+            # সিম্পল হিসাবের জন্য BDT কে USD তে কনভার্ট করে টোটাল দেখানো (১২৫ রেট ধরে)
+            if currency == "BDT":
+                total_usd += amount / 125.0
+            else:
+                total_usd += amount
+                
+        text += f"\n💰 <b>Estimated Total (USD):</b> ~${total_usd:,.2f}"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
 # 📋 GENERATE PRICE LIST (নতুন ফিচার)
@@ -199,11 +234,16 @@ async def process_deposit(callback: CallbackQuery, bot: Bot):
     data = doc.to_dict()
     user_id = data.get('user_id')
     amount_bdt = data.get('amount', 0)
+    method_name = data.get('method', 'Local Payment')
     amount_usd = round(amount_bdt / 125.0, 2)
     
     if action == "appdep":
         db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
         doc_ref.update({'status': 'approved'})
+        
+        # 🟢 NEW ADDED FOR REPORT: Approve হওয়ার পর ডাটাবেসের Deposit History তে সেভ হবে
+        await save_deposit_history(user_id=user_id, amount=amount_bdt, method=method_name, trx_id=trxid, currency="BDT")
+        
         try: await bot.send_message(user_id, f"🎉 <b>Deposit Approved!</b>\n<b>${amount_usd}</b> added to your wallet.", parse_mode="HTML")
         except: pass
         await callback.answer("✅ Deposit Approved!", show_alert=True)
