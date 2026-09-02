@@ -120,7 +120,7 @@ async def receive_crypto_amount(message: Message, state: FSMContext):
         
     base_amount = int(message.text)
     
-   # র‍্যান্ডম ফ্র্যাকশন (১ সেন্ট থেকে ২০ সেন্টের মধ্যে) তৈরি করা
+    # 🚀 র‍্যান্ডম ফ্র্যাকশন (১ সেন্ট থেকে ২০ সেন্টের মধ্যে) তৈরি করা
     fraction = random.randint(1, 20) / 100.0
     expected_amount = round(base_amount + fraction, 2)
     
@@ -145,6 +145,9 @@ async def receive_crypto_amount(message: Message, state: FSMContext):
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
+# ==========================================
+# ⚡ CRYPTO AUTO-VERIFY BUTTON CLICK (FIXED HANG ISSUE)
+# ==========================================
 @router.callback_query(F.data == "verify_crypto_payment")
 async def verify_crypto_payment(callback: CallbackQuery, state: FSMContext):
     """ভেরিফাই বাটনে ক্লিক করলে ইমেইল পার্সার কল হবে"""
@@ -153,10 +156,11 @@ async def verify_crypto_payment(callback: CallbackQuery, state: FSMContext):
     method_key = data.get("method_key")
     user_id = callback.from_user.id
     
-    await callback.answer("⏳ Scanning inbox... Please wait.", show_alert=False)
+    # 🚀 টেলিগ্রামকে সাথে সাথে রেসপন্স দেওয়া, যাতে বাটন হ্যাং না করে
+    await callback.answer("⏳ Scanning inbox... Please wait 3-5 seconds.", show_alert=True)
     
-    # 🚀 জিমেইল স্ক্যান করা হচ্ছে
-    is_paid = check_crypto_payment(expected_amount, method_key)
+    # 🚀 ইমেইল স্ক্যানিংকে ব্যাকগ্রাউন্ড থ্রেডে পাঠানো হলো
+    is_paid = await asyncio.to_thread(check_crypto_payment, expected_amount, method_key)
     
     if is_paid:
         if db:
@@ -167,10 +171,18 @@ async def verify_crypto_payment(callback: CallbackQuery, state: FSMContext):
             f"<b>${expected_amount}</b> has been automatically added to your wallet."
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Go to Shop", callback_data="menu_buy")]])
-        await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
+        
+        # মেসেজ এডিট করতে সমস্যা হলে নতুন মেসেজ পাঠাবে
+        try:
+            await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
+        except:
+            await callback.message.delete()
+            await callback.message.answer(success_text, reply_markup=keyboard, parse_mode="HTML")
+            
         await state.clear()
     else:
-        await callback.answer("❌ Payment not found! Please wait 1-2 minutes for the email and click verify again.", show_alert=True)
+        # মেইলে পেমেন্ট না পাওয়া গেলে
+        await callback.message.answer("❌ Payment not found! Please wait 1-2 minutes for the confirmation email to arrive at our end, then click verify again.")
 
 # ==========================================
 # 📱 LOCAL PAYMENT FLOW (আপনার আগের কোড)
