@@ -12,7 +12,8 @@ from firebase_admin import firestore
 from binance.client import Client  
 from pybit.unified_trading import HTTP  # 🚀 Bybit API লাইব্রেরি
 
-from database.crud import db, create_pending_deposit
+# 🟢 NEW ADDED FOR REPORT: save_deposit_history ইম্পোর্ট করা হলো
+from database.crud import db, create_pending_deposit, save_deposit_history
 from config import ADMIN_IDS
 
 router = Router()
@@ -203,6 +204,9 @@ async def process_crypto_trxid(message: Message, state: FSMContext):
             
             # ডাটাবেসে সেভ
             trx_ref.set({'user_id': user_id, 'amount': amount_usd, 'currency': currency, 'platform': method_key, 'timestamp': firestore.SERVER_TIMESTAMP})
+            
+            # 🟢 NEW ADDED FOR REPORT: অটো-ভেরিফাই হওয়ার পর ডাটাবেসের Deposit History তে সেভ হবে
+            await save_deposit_history(user_id=user_id, amount=amount_usd, method=platform_name, trx_id=trx_id, currency=currency)
             
             # ইউজারের ব্যালেন্স আপডেট
             db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
