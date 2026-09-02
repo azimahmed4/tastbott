@@ -1,4 +1,7 @@
-# handlers/admin.py
+# ==========================================
+# File: handlers/admin.py
+# Purpose: বটের অ্যাডমিন প্যানেল, ডেলিভারি, প্রোডাক্ট ম্যানেজমেন্ট এবং প্রাইস লিস্ট
+# ==========================================
 import time
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
@@ -8,7 +11,8 @@ from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
 
 from config import ADMIN_IDS
-from database.crud import db, get_product, delete_product, add_subcategory, get_subcategories, delete_subcategory
+# 🚀 প্রাইস লিস্ট বানানোর জন্য get_products_by_category ইম্পোর্ট করা হয়েছে
+from database.crud import db, get_product, delete_product, add_subcategory, get_subcategories, delete_subcategory, get_products_by_category
 
 router = Router()
 
@@ -16,6 +20,7 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 def get_admin_menu():
+    """অ্যাডমিন প্যানেলের মূল মেনু"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="⏳ Pending Deposits", callback_data="admin_deposits"),
@@ -25,6 +30,8 @@ def get_admin_menu():
             InlineKeyboardButton(text="🛒 Manage Products", callback_data="admin_products"),
             InlineKeyboardButton(text="👥 Users", callback_data="admin_users")
         ],
+        # 🚀 নতুন বাটন: এক ক্লিকে প্রাইস লিস্ট বের করার জন্য
+        [InlineKeyboardButton(text="📋 Generate Price List", callback_data="admin_price_list")],
         [InlineKeyboardButton(text="📢 Broadcast Message", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin")]
     ])
@@ -69,7 +76,70 @@ async def close_admin_panel(callback: CallbackQuery, state: FSMContext):
 async def back_to_admin(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     if is_admin(callback.from_user.id):
-        await callback.message.edit_text("👨‍💻 <b>Admin Control Panel</b>", reply_markup=get_admin_menu(), parse_mode="HTML")
+        # 🚀 প্রাইস লিস্ট জেনারেট করার পর মেসেজ ডিলিট হয়ে যায়, তাই try-except দিয়ে সেভ করা হয়েছে
+        try:
+            await callback.message.edit_text("👨‍💻 <b>Admin Control Panel</b>", reply_markup=get_admin_menu(), parse_mode="HTML")
+        except:
+            await callback.message.delete()
+            await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>", reply_markup=get_admin_menu(), parse_mode="HTML")
+
+# ==========================================
+# 📋 GENERATE PRICE LIST (নতুন ফিচার)
+# ==========================================
+@router.callback_query(F.data == "admin_price_list")
+async def price_list_menu(callback: CallbackQuery):
+    """লিস্ট জেনারেট করার জন্য মূল ক্যাটাগরি সিলেক্ট করা"""
+    if not is_admin(callback.from_user.id): return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 VPN", callback_data="plist_cat_vpn"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="plist_cat_proxy")],
+        [InlineKeyboardButton(text="🎟️ Premium", callback_data="plist_cat_sub"), InlineKeyboardButton(text="🤖 AI Service", callback_data="plist_cat_ai")],
+        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]
+    ])
+    await callback.message.edit_text("📋 <b>Generate Price List</b>\n\nWhich category list do you want to generate?", reply_markup=keyboard, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("plist_cat_"))
+async def price_list_subcat(callback: CallbackQuery):
+    """সাব-ক্যাটাগরি সিলেক্ট করা"""
+    if not is_admin(callback.from_user.id): return
+    cat = callback.data.split("_")[2]
+    
+    if cat in ['vpn', 'proxy']:
+        subcats = await get_subcategories(cat)
+        keyboard = []
+        for sc in subcats:
+            keyboard.append([InlineKeyboardButton(text=f"📂 {sc['name']}", callback_data=f"plist_gen|{cat}|{sc['subcat_id']}")])
+        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="admin_price_list")])
+        await callback.message.edit_text("📂 <b>Select Sub-Category to Generate List:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+    else:
+        await generate_list_message(callback, cat, "none")
+
+@router.callback_query(F.data.startswith("plist_gen|"))
+async def price_list_generate_callback(callback: CallbackQuery):
+    parts = callback.data.split("|")
+    cat = parts[1]
+    subcat = parts[2]
+    await generate_list_message(callback, cat, subcat)
+
+async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
+    """ডাটাবেস থেকে প্রোডাক্ট তুলে এনে সুন্দর মেসেজ (লিস্ট) তৈরি করা"""
+    products_dict = await get_products_by_category(cat, subcat)
+    
+    if not products_dict:
+        return await callback.answer("⚠️ No products found in this category!", show_alert=True)
+    
+    cat_display = cat.upper()
+    msg_text = f"🔥 <b>Available {cat_display} Packages</b> 🔥\n\n"
+    
+    for pid, details in products_dict.items():
+        msg_text += f"✅ {details['name']} ➔ <b>${details['price']}</b>\n"
+        
+    msg_text += "\n🛒 <i>Order now from our bot!</i>"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Admin Panel", callback_data="back_to_admin")]])
+    
+    # লিস্টটিকে কপি/ফরওয়ার্ড করার সুবিধার জন্য ক্লিন মেসেজ হিসেবে পাঠানো হচ্ছে
+    await callback.message.delete()
+    await callback.message.answer(msg_text, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
 # 💰 Deposit Approvals
@@ -306,17 +376,15 @@ async def show_category_products_sub(callback: CallbackQuery):
         keyboard.append([InlineKeyboardButton(text=f"{details.get('name', 'Unknown')} | ${details.get('price', 0.0)}", callback_data=f"editp|{doc.id}")])
         
     keyboard.append([InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product")])
-    # 🚀 নতুন বাটন: অ্যাডমিন এখান থেকে সাব-ক্যাটাগরি ডিলিট করতে পারবেন
     keyboard.append([InlineKeyboardButton(text="🗑️ Delete Sub-Category", callback_data=f"delsubcat|{cat}|{subcat}")])
     keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}")])
     
     text = f"📦 <b>Manage Products</b>\n\nSelect a product to edit or delete:"
-    if len(keyboard) == 3: # শুধু Add, Delete, Back বাটন থাকলে
+    if len(keyboard) == 3: 
         text = f"⚠️ <b>No products found here.</b>"
         
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
-# 🚀 নতুন ফাংশন: সাব-ক্যাটাগরি ডিলিট করার লজিক
 @router.callback_query(F.data.startswith("delsubcat|"))
 async def process_delete_subcat(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -327,7 +395,6 @@ async def process_delete_subcat(callback: CallbackQuery):
     await delete_subcategory(subcat)
     await callback.answer("✅ Sub-Category deleted successfully!", show_alert=True)
     
-    # ডিলিট করার পর মূল ক্যাটাগরিতে ফেরত পাঠানো
     callback.data = f"admin_cat_{cat}"
     await show_category_options(callback)
 
@@ -384,7 +451,9 @@ async def save_subcat(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Sub-category added to {cat.upper()}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}")]]))
 
-# --- Add Product ---
+# ==========================================
+# 🆕 Add Product (Continuous Addition Loop)
+# ==========================================
 @router.callback_query(F.data == "add_new_product")
 async def add_product_category(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
@@ -426,6 +495,7 @@ async def add_product_price(message: Message, state: FSMContext):
 
 @router.message(AddProductState.price)
 async def save_new_product(message: Message, state: FSMContext):
+    """প্রোডাক্ট ডাটাবেসে সেভ করার পর লুপ চালিয়ে আবার নাম চাইবে"""
     try: price = float(message.text)
     except ValueError: return await message.answer("❌ Invalid price format.")
     
@@ -437,10 +507,23 @@ async def save_new_product(message: Message, state: FSMContext):
             'name': data['prod_name'], 'price': price, 'updated_at': firestore.SERVER_TIMESTAMP
         })
         
-    await state.clear()
-    await message.answer(f"✅ <b>Product Added!</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]]), parse_mode="HTML")
+    # 🚀 State পুরোপুরি ক্লিয়ার না করে আবার Name স্টেটে সেট করা হলো
+    await state.set_state(AddProductState.name)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏹️ Stop Adding (Dashboard)", callback_data="back_to_admin")]
+    ])
+    
+    await message.answer(
+        f"✅ <b>Product Added!</b>\n📦 {data['prod_name']} - ${price}\n\n"
+        "📝 <b>Enter NEXT Product Name:</b>\n"
+        "<i>(Or click Stop to return to dashboard)</i>", 
+        reply_markup=keyboard, parse_mode="HTML"
+    )
 
-# --- Users & Broadcast ---
+# ==========================================
+# 👥 Users Management
+# ==========================================
 @router.callback_query(F.data == "admin_users")
 async def manage_users_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -470,9 +553,17 @@ async def search_user_result(message: Message, state: FSMContext):
         
     user_info = doc.to_dict()
     await state.update_data(target_user=target_uid)
+    
+    # 🚀 ইউজারের ইউজারনেম শো করার লজিক
+    username = user_info.get('username')
+    user_display = f"@{username}" if username else "No Username"
+    
     text = (
-        f"👤 <b>User Details</b>\n\n🆔 <b>ID:</b> <code>{target_uid}</code>\n📛 <b>Name:</b> {user_info.get('first_name', 'Unknown')}\n"
-        f"💰 <b>Balance:</b> ${user_info.get('balance', 0.0):.2f}\n💸 <b>Spent:</b> ${user_info.get('total_spent', 0.0):.2f}"
+        f"👤 <b>User Details</b>\n\n🆔 <b>ID:</b> <code>{target_uid}</code>\n"
+        f"📛 <b>Name:</b> {user_info.get('first_name', 'Unknown')}\n"
+        f"🔗 <b>Username:</b> {user_display}\n"
+        f"💰 <b>Balance:</b> ${user_info.get('balance', 0.0):.2f}\n"
+        f"💸 <b>Spent:</b> ${user_info.get('total_spent', 0.0):.2f}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Add Balance", callback_data=f"addbal_{target_uid}"), InlineKeyboardButton(text="➖ Deduct Balance", callback_data=f"dedbal_{target_uid}")],
@@ -514,6 +605,9 @@ async def process_balance_change(message: Message, state: FSMContext, bot: Bot):
     new_balance = updated_doc.to_dict().get('balance', 0.0) if updated_doc.exists else 0.0
     await message.answer(f"✅ <b>Success!</b>\n\n👤 <b>User:</b> <code>{target_uid}</code>\n💰 <b>New Balance:</b> ${new_balance:.2f}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]]), parse_mode="HTML")
 
+# ==========================================
+# 📢 Broadcast Message
+# ==========================================
 @router.callback_query(F.data == "admin_broadcast")
 async def broadcast_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
