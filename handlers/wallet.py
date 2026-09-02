@@ -3,6 +3,7 @@
 # Purpose: ডিরেক্ট ডিপোজিট সিস্টেম (Crypto Auto Verify এবং Local Payment)
 # ==========================================
 import random
+import asyncio
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
