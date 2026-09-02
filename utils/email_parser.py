@@ -7,7 +7,7 @@ import email
 import re
 import os
 
-# Render থেকে আপনার জিমেইল এবং App Password নিয়ে আসবে
+# Render-এর Environment Variable থেকে জিমেইল এবং App Password নিয়ে আসবে
 EMAIL_ACCOUNT = os.environ.get("GMAIL_ACCOUNT")
 EMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 
@@ -18,16 +18,16 @@ def check_crypto_payment(expected_amount: float, platform: str) -> bool:
         return False
 
     try:
-        # 🚀 Gmail এর IMAP সার্ভারে লগইন
+        # Gmail এর IMAP সার্ভারে লগইন
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
         mail.select("inbox")
 
-        # 🚀 প্ল্যাটফর্ম অনুযায়ী সেন্ডার ইমেইল সেট করা
+        # প্ল্যাটফর্ম অনুযায়ী সেন্ডার ইমেইল সেট করা
         if platform == "binance":
-            sender_email = "do-not-reply@ses.binance.com" # আপনার স্ক্রিনশট অনুযায়ী
+            sender_email = "do-not-reply@ses.binance.com"
         else:
-            sender_email = "no-reply@bybit.com" # বাইবিটের সাধারণত এটাই হয়
+            sender_email = "no-reply@bybit.com"
 
         # ইনবক্স থেকে শুধু ওই সেন্ডারের মেইলগুলো খুঁজবে
         status, messages = mail.search(None, f'(FROM "{sender_email}")')
@@ -36,14 +36,13 @@ def check_crypto_payment(expected_amount: float, platform: str) -> bool:
 
         email_ids = messages[0].split()
         
-        # 🚀 স্পিড বাড়ানোর জন্য শুধু সর্বশেষ ৫টি মেইল চেক করবে
+        # স্পিড বাড়ানোর জন্য শুধু সর্বশেষ ৫টি মেইল চেক করবে
         for e_id in email_ids[-5:]:
             res, msg_data = mail.fetch(e_id, "(RFC822)")
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     msg = email.message_from_bytes(response_part[1])
                     
-                    # ইমেইলের বডি (টেক্সট) এক্সট্রাক্ট করা
                     body = ""
                     if msg.is_multipart():
                         for part in msg.walk():
@@ -53,17 +52,19 @@ def check_crypto_payment(expected_amount: float, platform: str) -> bool:
                     else:
                         body = msg.get_payload(decode=True).decode(errors="ignore")
 
-                    # 🚀 Regex দিয়ে অ্যামাউন্ট খোঁজার লজিক
+                    # Regex দিয়ে অ্যামাউন্ট খোঁজার লজিক
                     if platform == "binance":
                         # খুঁজবে: "Amount: 5.07 USDT"
                         match = re.search(r"Amount:\s*([0-9\.]+)\s*USDT", body, re.IGNORECASE)
                         if match:
                             found_amount = float(match.group(1))
                             if found_amount == expected_amount:
+                                mail.logout()
                                 return True
                     elif platform == "bybit":
-                        # বাইবিটের জন্য সিম্পল লজিক (আপাতত)
+                        # বাইবিটের জন্য সাধারণ ম্যাচিং
                         if str(expected_amount) in body:
+                            mail.logout()
                             return True
 
         mail.logout()
