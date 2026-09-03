@@ -42,7 +42,7 @@ else:
 
 CRYPTO_METHODS = {
     "binance": {"name": "Binance Pay", "pay_id": "1126025983"},
-    "bybit": {"name": "Bybit Pay", "pay_id": "127145762"} 
+    "bybit": {"name": "Bybit Internal Transfer", "pay_id": "127145762"} 
 }
 
 LOCAL_METHODS = {
@@ -105,11 +105,19 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         await state.update_data(payment_method=method_name, method_key=m_key, method_type="crypto")
         await state.set_state(DepositState.waiting_for_crypto_trxid)
         
-        instruction = (
-            f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
-            f"🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n"
-            f"⚠️ <i>Please send USDT to the Pay ID above. After sending, type your <b>Order ID or Transaction ID (TrxID)</b> below:</i>"
-        )
+        if m_key == "binance":
+            instruction = (
+                f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
+                f"🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n"
+                f"⚠️ <i>Please send USDT to the Pay ID above. After sending, type your <b>Order ID or Transaction ID (TrxID)</b> below:</i>"
+            )
+        else: # bybit
+            instruction = (
+                f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
+                f"🔹 <b>UID:</b> <code>{pay_id}</code>\n\n"
+                f"⚠️ <i>Please send USDT via <b>'Withdraw -> Internal Transfer'</b> to the UID above. After sending, type your <b>Transaction ID (txID)</b> below:</i>"
+            )
+            
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]])
         await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
         
