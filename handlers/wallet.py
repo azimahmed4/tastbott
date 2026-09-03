@@ -42,7 +42,9 @@ else:
 
 CRYPTO_METHODS = {
     "binance": {"name": "Binance Pay", "pay_id": "1126025983"},
-    "bybit": {"name": "Bybit Internal Transfer", "pay_id": "127145762"} 
+    "bybit": {"name": "Bybit Internal Transfer", "pay_id": "127145762"},
+    # 🟢 নতুন অ্যাড্রেস পেমেন্ট মেথড যুক্ত করা হলো
+    "bybitaddress": {"name": "USDT (BEP20)", "address": "0x822ee632c8223cb5b0457e6a8a36221bbe52a87c"} 
 }
 
 LOCAL_METHODS = {
@@ -74,6 +76,10 @@ async def show_deposit_menu(callback: CallbackQuery, state: FSMContext):
             InlineKeyboardButton(text=CRYPTO_METHODS["binance"]["name"], callback_data="dep_crypto_binance"),
             InlineKeyboardButton(text=CRYPTO_METHODS["bybit"]["name"], callback_data="dep_crypto_bybit")
         ],
+        # 🟢 ক্রিপ্টো অ্যাড্রেসের জন্য নতুন বাটন
+        [
+            InlineKeyboardButton(text=CRYPTO_METHODS["bybitaddress"]["name"], callback_data="dep_crypto_bybitaddress")
+        ],
         [
             InlineKeyboardButton(text=LOCAL_METHODS["bkash"]["name"], callback_data="dep_local_bkash"),
             InlineKeyboardButton(text=LOCAL_METHODS["nagad"]["name"], callback_data="dep_local_nagad")
@@ -96,26 +102,36 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
     m_type = parts[1] 
     m_key = parts[2]  
     
-    # 🚀 Crypto Flow (Binance & Bybit)
+    # 🚀 Crypto Flow (Binance, Bybit & Address)
     if m_type == "crypto":
         method_info = CRYPTO_METHODS.get(m_key, {})
         method_name = method_info.get("name", "Crypto Payment")
-        pay_id = method_info.get("pay_id", "Unknown")
         
         await state.update_data(payment_method=method_name, method_key=m_key, method_type="crypto")
         await state.set_state(DepositState.waiting_for_crypto_trxid)
         
         if m_key == "binance":
+            pay_id = method_info.get("pay_id", "Unknown")
             instruction = (
                 f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
                 f"🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n"
                 f"⚠️ <i>Please send USDT to the Pay ID above. After sending, type your <b>Order ID or Transaction ID (TrxID)</b> below:</i>"
             )
-        else: # bybit
+        elif m_key == "bybit":
+            pay_id = method_info.get("pay_id", "Unknown")
             instruction = (
                 f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
                 f"🔹 <b>UID:</b> <code>{pay_id}</code>\n\n"
                 f"⚠️ <i>Please send USDT via <b>'Withdraw -> Internal Transfer'</b> to the UID above. After sending, type your <b>Transaction ID (txID)</b> below:</i>"
+            )
+        elif m_key == "bybitaddress":
+            # 🟢 নেটওয়ার্ক অ্যাড্রেসের জন্য স্পেশাল ইনস্ট্রাকশন
+            address = method_info.get("address", "Unknown")
+            instruction = (
+                f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
+                f"🔹 <b>Supported Networks:</b> BEP20 (BSC)\n"
+                f"🔹 <b>Deposit Address:</b> <code>{address}</code>\n\n"
+                f"⚠️ <i>Please send USDT to the address above. Wait 1-2 minutes for network confirmation, then type your <b>Transaction Hash (TxID)</b> below:</i>"
             )
             
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet")]])
@@ -161,18 +177,18 @@ def verify_crypto_pay(trx_id: str, platform: str):
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    elif platform == "bybit":
+    # 🟢 বাইবিট ইন্টারনাল ট্রান্সফার এবং অন-চেইন অ্যাড্রেস উভয়ের জন্যই একই Bybit API কাজ করবে
+    elif platform in ["bybit", "bybitaddress"]:
         if not BYBIT_API_KEY or not BYBIT_SECRET_KEY:
             return {"status": "error", "message": "Bybit API keys not set."}
         try:
-            # Bybit API ইনিশিয়ালাইজ করা
             session = HTTP(
                 testnet=False,
                 api_key=BYBIT_API_KEY,
                 api_secret=BYBIT_SECRET_KEY,
             )
             
-            # ১. প্রথমে Internal Deposit (Bybit Pay / UID Transfer) চেক করবে
+            # ১. Internal Deposit (Bybit Pay / UID Transfer) চেক
             internal_res = session.get_internal_deposit_records(limit=50)
             if internal_res.get('retCode') == 0 and 'result' in internal_res and 'rows' in internal_res['result']:
                 for tx in internal_res['result']['rows']:
@@ -183,7 +199,7 @@ def verify_crypto_pay(trx_id: str, platform: str):
                         else:
                             return {"status": "failed", "message": "Transaction is still Processing. Try again later."}
             
-            # ২. যদি বাইবিট পেতে না পায়, তবে অন-চেইন ডিপোজিট (Network Address) চেক করবে
+            # ২. On-chain Deposit (Network Address) চেক
             deposit_res = session.get_deposit_records(limit=50)
             if deposit_res.get('retCode') == 0 and 'result' in deposit_res and 'rows' in deposit_res['result']:
                 for tx in deposit_res['result']['rows']:
@@ -194,7 +210,7 @@ def verify_crypto_pay(trx_id: str, platform: str):
                         else:
                             return {"status": "failed", "message": "Network Transaction is not confirmed yet. Please wait 1-2 minutes."}
                             
-            return {"status": "failed", "message": "Transaction not found in Bybit."}
+            return {"status": "failed", "message": "Transaction not found on network."}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
@@ -204,10 +220,10 @@ async def process_crypto_trxid(message: Message, state: FSMContext):
     user_id = message.from_user.id
     
     data = await state.get_data()
-    method_key = data.get("method_key") # 'binance' or 'bybit'
+    method_key = data.get("method_key") # 'binance', 'bybit', or 'bybitaddress'
     platform_name = data.get("payment_method")
     
-    processing_msg = await message.answer(f"⏳ <b>Communicating with {platform_name} Server...</b>\nPlease wait a few seconds.", parse_mode="HTML")
+    processing_msg = await message.answer(f"⏳ <b>Communicating with Blockchain Server...</b>\nPlease wait a few seconds.", parse_mode="HTML")
     
     # 🚀 API কল থ্রেডে পাঠানো হলো
     result = await asyncio.to_thread(verify_crypto_pay, trx_id, method_key)
@@ -228,7 +244,7 @@ async def process_crypto_trxid(message: Message, state: FSMContext):
             # ডাটাবেসে সেভ
             trx_ref.set({'user_id': user_id, 'amount': amount_usd, 'currency': currency, 'platform': method_key, 'timestamp': firestore.SERVER_TIMESTAMP})
             
-            # 🟢 NEW ADDED FOR REPORT: অটো-ভেরিফাই হওয়ার পর ডাটাবেসের Deposit History তে সেভ হবে
+            # 🟢 অটো-ভেরিফাই হওয়ার পর ডাটাবেসের Deposit History তে সেভ হবে
             await save_deposit_history(user_id=user_id, amount=amount_usd, method=platform_name, trx_id=trx_id, currency=currency)
             
             # ইউজারের ব্যালেন্স আপডেট
