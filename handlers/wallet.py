@@ -163,14 +163,29 @@ def verify_crypto_pay(trx_id: str, platform: str):
                 api_key=BYBIT_API_KEY,
                 api_secret=BYBIT_SECRET_KEY,
             )
-            # Bybit Asset Transfer/Deposit হিস্ট্রি চেক করা
-            response = session.get_asset_transfer_records(limit=50) # প্রয়োজন অনুযায়ী API এন্ডপয়েন্ট পরিবর্তন হতে পারে
             
-            if response.get('retCode') == 0 and 'result' in response and 'list' in response['result']:
-                for tx in response['result']['list']:
-                    if tx.get('transferId') == trx_id or tx.get('txID') == trx_id: # Bybit এর রেসপন্স অনুযায়ী কী (Key) মিলাতে হবে
-                        amount = float(tx.get('amount', 0))
-                        return {"status": "success", "amount": amount, "currency": tx.get('coin', 'USDT')}
+            # ১. প্রথমে Internal Deposit (Bybit Pay / UID Transfer) চেক করবে
+            internal_res = session.get_internal_deposit_records(limit=50)
+            if internal_res.get('retCode') == 0 and 'result' in internal_res and 'rows' in internal_res['result']:
+                for tx in internal_res['result']['rows']:
+                    if tx.get('txID') == trx_id:
+                        if tx.get('status') == 2: # 2 = Success (Bybit Pay)
+                            amount = float(tx.get('amount', 0))
+                            return {"status": "success", "amount": amount, "currency": tx.get('coin', 'USDT')}
+                        else:
+                            return {"status": "failed", "message": "Transaction is still Processing. Try again later."}
+            
+            # ২. যদি বাইবিট পেতে না পায়, তবে অন-চেইন ডিপোজিট (Network Address) চেক করবে
+            deposit_res = session.get_deposit_records(limit=50)
+            if deposit_res.get('retCode') == 0 and 'result' in deposit_res and 'rows' in deposit_res['result']:
+                for tx in deposit_res['result']['rows']:
+                    if tx.get('txID') == trx_id:
+                        if tx.get('status') == 3: # 3 = Success (On-chain)
+                            amount = float(tx.get('amount', 0))
+                            return {"status": "success", "amount": amount, "currency": tx.get('coin', 'USDT')}
+                        else:
+                            return {"status": "failed", "message": "Network Transaction is not confirmed yet. Please wait 1-2 minutes."}
+                            
             return {"status": "failed", "message": "Transaction not found in Bybit."}
         except Exception as e:
             return {"status": "error", "message": str(e)}
