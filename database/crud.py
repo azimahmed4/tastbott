@@ -1,5 +1,7 @@
 import os
 import json
+import random
+import string
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -19,6 +21,26 @@ if firebase_creds_json:
         print(f"❌ Firebase Error: {e}")
 else:
     print("⚠️ FIREBASE_CREDENTIALS not found!")
+
+# ==========================================
+# 🟢 NEW: Bot Maintenance Mode Settings
+# ==========================================
+async def set_bot_status(is_maintenance: bool):
+    """বটের মেইনটেনেন্স স্ট্যাটাস অন/অফ করবে"""
+    if not db: return False
+    db.collection('settings').document('bot_status').set({
+        'maintenance': is_maintenance,
+        'updated_at': firestore.SERVER_TIMESTAMP
+    })
+    return True
+
+async def get_bot_status():
+    """বট কি এখন মেইনটেনেন্সে আছে নাকি লাইভ, সেটা চেক করবে"""
+    if not db: return False
+    doc = db.collection('settings').document('bot_status').get()
+    if doc.exists:
+        return doc.to_dict().get('maintenance', False)
+    return False
 
 # ==========================================
 # Database Functions - Users
@@ -77,15 +99,21 @@ async def delete_subcategory(subcat_id: str):
 # ==========================================
 # Database Functions - Shop & Products
 # ==========================================
-async def add_or_update_product(product_id: str, category: str, sub_category: str, name: str, price: float):
+async def add_or_update_product(product_id: str, category: str, sub_category: str, name: str, price: float, delivery_type: str = "manual", stock: list = None):
+    """
+    🟢 UPDATED: Auto/Manual Delivery এবং Stock সংরক্ষণের অপশন যোগ করা হয়েছে
+    """
     if not db: return False
     product_ref = db.collection('products').document(product_id)
+    
     product_data = {
         'product_id': product_id,
         'category': category,
         'sub_category': sub_category, 
         'name': name,
         'price': float(price),
+        'delivery_type': delivery_type, # "auto" or "manual"
+        'stock': stock if stock else [], # অটো ডেলিভারির জন্য অ্যাকাউন্ট/কী এর লিস্ট
         'updated_at': firestore.SERVER_TIMESTAMP
     }
     product_ref.set(product_data, merge=True)
@@ -115,20 +143,33 @@ async def delete_product(product_id: str):
 # ==========================================
 # Database Functions - Pending Orders & Deposits
 # ==========================================
-async def create_pending_order(user_id: int, product_id: str, product_name: str, qty: int, total_price: float):
+def generate_invoice_id():
+    """🟢 NEW: 랜덤 ইনভয়েস আইডি জেনারেট করবে (e.g. INV178886131)"""
+    import time
+    random_str = ''.join(random.choices(string.digits, k=4))
+    timestamp = str(int(time.time()))
+    return f"INV{timestamp}{random_str}"
+
+async def create_pending_order(user_id: int, product_id: str, product_name: str, qty: int, total_price: float, delivery_type: str = "manual"):
+    """🟢 UPDATED: ইনভয়েস আইডি এবং ডেলিভারি টাইপ সহ অর্ডার সেভ করবে"""
     if not db: return None
-    order_ref = db.collection('pending_orders').document()
+    
+    invoice_id = generate_invoice_id()
+    order_ref = db.collection('pending_orders').document(invoice_id)
+    
     order_ref.set({
-        'order_id': order_ref.id,
+        'order_id': invoice_id,
+        'invoice_id': invoice_id,
         'user_id': user_id,
         'product_id': product_id,
         'product_name': product_name,
         'qty': qty,
         'total_price': total_price,
+        'delivery_type': delivery_type,
         'status': 'pending',
         'timestamp': firestore.SERVER_TIMESTAMP
     })
-    return order_ref.id
+    return invoice_id
 
 async def create_pending_deposit(user_id: int, amount: float, method: str, sender_number: str, trx_id: str):
     if not db: return None
@@ -146,7 +187,7 @@ async def create_pending_deposit(user_id: int, amount: float, method: str, sende
     return deposit_ref.id
 
 # ==========================================
-# 🟢 NEW ADDED FOR REPORT: Database Functions - Deposit History & Reports
+# Database Functions - Deposit History & Reports
 # ==========================================
 async def save_deposit_history(user_id: int, amount: float, method: str, trx_id: str, currency: str):
     if not db: return False
