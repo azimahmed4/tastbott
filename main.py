@@ -21,10 +21,10 @@ async def main():
     dp = Dispatcher()
 
     # মিডলওয়্যার যুক্ত করা
-    dp.message.middleware(ForceSubMiddleware())
-    dp.callback_query.middleware(ForceSubMiddleware())
     dp.message.middleware(MaintenanceMiddleware())
     dp.callback_query.middleware(MaintenanceMiddleware())
+    dp.message.middleware(ForceSubMiddleware())
+    dp.callback_query.middleware(ForceSubMiddleware())
 
     # সব রাউটার ডিসপ্যাচারে যুক্ত করা
     dp.include_router(start_router)
