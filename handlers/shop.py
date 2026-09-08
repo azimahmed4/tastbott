@@ -9,9 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
 
-from config import ADMIN_IDS, BOT_USERNAME
-from database.crud import (db, get_products_by_category, get_product, get_subcategories, 
-                           get_user, create_pending_order)
+from database.crud import (db, get_products_by_category, get_product, get_subcategories)
 
 router = Router()
 
@@ -19,7 +17,7 @@ ITEMS_PER_PAGE = 10
 ORDERS_PER_PAGE = 3 # My Orders এ প্রতি পেজে কয়টি অর্ডার দেখাবে
 
 # ==========================================
-# 🎨 PREMIUM EMOJI IDs (আপনার পছন্দমত পরিবর্তন করতে পারবেন)
+# 🎨 PREMIUM EMOJI IDs 
 # ==========================================
 EMOJI_CART = "5368324170671202286"
 EMOJI_BOX = "5368324170671202287"
@@ -47,8 +45,8 @@ async def show_categories(callback: CallbackQuery, state: FSMContext):
         ],
         # 🟢 NEW: My Orders and Search Button
         [
-            InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders|0", icon_custom_emoji_id=EMOJI_BOX),
-            InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", icon_custom_emoji_id=EMOJI_SEARCH)
+            InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders|0", style="primary", icon_custom_emoji_id=EMOJI_BOX),
+            InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", style="primary", icon_custom_emoji_id=EMOJI_SEARCH)
         ],
         [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
@@ -133,7 +131,7 @@ async def process_invoice_search(message: Message, state: FSMContext):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Try Again", callback_data="search_invoice")]])
         return await message.answer(f"❌ <b>Invoice Not Found!</b>\nPlease check the ID: <code>{invoice_id}</code>", reply_markup=keyboard, parse_mode="HTML")
         
-    # 🟢 Smart Invoice Output (image_2da064.png style)
+    # 🟢 Smart Invoice Output 
     text = (
         f"✔️ <b>ORDER STATUS</b>\n\n"
         f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
@@ -212,7 +210,7 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 # ==========================================
-# 🛒 BUYING PROCESS & AUTO/MANUAL LOGIC
+# 🛒 BUYING PROCESS (Quantity Selection)
 # ==========================================
 @router.callback_query(F.data.startswith("buy_"))
 async def start_buy(callback: CallbackQuery):
@@ -260,6 +258,7 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
             InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty"),
             InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}")
         ],
+        # 🟢 এই বাটনটি payment.py ফাইলে process_payment কে ট্রিগার করবে
         [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}", style="success", icon_custom_emoji_id=EMOJI_CART)],
         [InlineKeyboardButton(text="◀️ Cancel", callback_data=back_btn, style="danger")]
     ])
@@ -270,110 +269,3 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
 @router.callback_query(F.data == "ignore_qty")
 async def ignore_qty_click(callback: CallbackQuery):
     await callback.answer("Use + or - to change quantity.")
-
-# ==========================================
-# 💳 PAYMENT PROCESSING (AUTO & MANUAL)
-# ==========================================
-@router.callback_query(F.data.startswith("pay_"))
-async def process_payment(callback: CallbackQuery, bot: Bot):
-    parts = callback.data.split("_")
-    qty = int(parts[1])
-    prod_id = "_".join(parts[2:])
-    user_id = callback.from_user.id
-    
-    # Check Database
-    if not db: return await callback.answer("System Error", show_alert=True)
-    
-    product = await get_product(prod_id)
-    user = await get_user(user_id)
-    
-    if not product or not user:
-        return await callback.answer("Error processing request.", show_alert=True)
-        
-    total_price = round(product['price'] * qty, 2)
-    user_balance = float(user.get('balance', 0.0))
-    
-    if user_balance < total_price:
-        return await callback.answer(f"❌ Insufficient Balance!\nYou need ${total_price} but you have ${user_balance}", show_alert=True)
-        
-    # Deduct Balance
-    db.collection('users').document(str(user_id)).update({
-        'balance': firestore.Increment(-total_price),
-        'total_spent': firestore.Increment(total_price)
-    })
-    
-    delivery_type = product.get('delivery_type', 'manual')
-    stock_list = product.get('stock', [])
-    
-    # 🟢 AUTO DELIVERY LOGIC
-    if delivery_type == "auto" and len(stock_list) >= qty:
-        delivered_items = stock_list[:qty]
-        remaining_stock = stock_list[qty:]
-        
-        # Update stock
-        db.collection('products').document(prod_id).update({'stock': remaining_stock})
-        
-        # Generate Invoice and Save to Completed Orders
-        from database.crud import generate_invoice_id
-        invoice_id = generate_invoice_id()
-        
-        db.collection('orders').document(invoice_id).set({
-            'order_id': invoice_id, 'invoice_id': invoice_id, 'user_id': user_id, 
-            'product_id': prod_id, 'product_name': product['name'],
-            'qty': qty, 'total_price': total_price, 'items_delivered': delivered_items, 
-            'completed_by': 'System', 'timestamp': firestore.SERVER_TIMESTAMP
-        })
-        
-        # Send Auto Delivery Message
-        delivery_text = (
-            f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
-            f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-            f"📦 <b>Package:</b> {product['name']}\n"
-            f"🔢 <b>Quantity:</b> {qty}\n"
-            f"💰 <b>Total Price:</b> ${total_price}\n"
-            f"➖➖➖➖➖➖➖➖➖➖\n"
-        )
-        for idx, item in enumerate(delivered_items, 1):
-            delivery_text += f"🛍️ <b>Item {idx}:</b>\n<code>{item}</code>\n\n"
-        delivery_text += "➖➖➖➖➖➖➖➖➖➖\n"
-        
-        buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{prod_id}", style="success")]])
-        await callback.message.edit_text(delivery_text, reply_markup=buy_again_kb, parse_mode="HTML")
-        
-        # Alert Admins for Low Stock
-        if len(remaining_stock) <= 2:
-            for admin_id in ADMIN_IDS:
-                try: await bot.send_message(admin_id, f"⚠️ <b>Low Stock Alert!</b>\nProduct: {product['name']} has only {len(remaining_stock)} left in stock.")
-                except: pass
-                
-    # 🟠 MANUAL LOGIC OR OUT OF STOCK
-    else:
-        # Create Pending Order for Admin
-        invoice_id = await create_pending_order(user_id, prod_id, product['name'], qty, total_price, delivery_type="manual")
-        
-        text = (
-            f"⏳ <b>Order Processing...</b>\n\n"
-            f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-            f"📦 <b>Product:</b> {product['name']}\n"
-            f"🔢 <b>Quantity:</b> {qty}\n"
-            f"💰 <b>Total Paid:</b> ${total_price}\n\n"
-            "👨‍💻 <i>Your order has been sent to the admin. You will receive your details shortly.</i>"
-        )
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice")],
-            [InlineKeyboardButton(text="🏠 Back to Shop", callback_data="menu_buy")]
-        ])
-        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-        
-        # Send notification to Admin
-        admin_text = (
-            f"🚨 <b>NEW MANUAL ORDER!</b>\n\n"
-            f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
-            f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-            f"📦 <b>Product:</b> {product['name']} (x{qty})\n"
-            f"💰 <b>Paid:</b> ${total_price}"
-        )
-        admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"vieword_{invoice_id}")]])
-        for admin_id in ADMIN_IDS:
-            try: await bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
-            except: pass
