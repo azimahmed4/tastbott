@@ -1,14 +1,22 @@
-# handlers/others.py
+# ==========================================
+# File: handlers/others.py
+# Purpose: রেফারেল সিস্টেম, সাপোর্ট এবং অন্যান্য সাধারণ মেনু
+# ==========================================
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from config import YOUTUBE_LINK, SUPPORT_USERNAME, BOT_USERNAME, REFERRAL_BONUS
 
-# 🚀 ডামি ডাটাবেসের বদলে ফায়ারবেস ইমপোর্ট করা হলো
+# 🚀 ফায়ারবেস ইমপোর্ট
 from database.crud import get_user
 
 router = Router()
 
-# 🔌 API Provider মেনু (এটা আপাতত কামিং সুন থাকবে)
+# ==========================================
+# 🎨 PREMIUM EMOJI IDs 
+# ==========================================
+EMOJI_MONEY = "5368324170671202288"
+
+# 🔌 API Provider মেনু 
 @router.callback_query(F.data == "menu_api")
 async def api_coming_soon(callback: CallbackQuery):
     await callback.answer("⏳ API provider feature is coming soon!", show_alert=True)
@@ -35,7 +43,8 @@ async def refer_menu(callback: CallbackQuery):
         "<i>(Tap the link to copy and share it with your friends)</i>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
+        # 🔗 URL বাটনগুলোতে টেলিগ্রাম স্টাইল সাপোর্ট দেয় না, তাই এগুলো নরমাল থাকবে
+        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -45,7 +54,7 @@ async def how_to_use_menu(callback: CallbackQuery):
     text = "🎥 <b>How to Use Our Bot</b>\n\nClick the button below to watch the tutorial video on our YouTube channel."
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📺 Watch Tutorial", url=YOUTUBE_LINK)],
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -55,6 +64,6 @@ async def support_menu(callback: CallbackQuery):
     text = "🎧 <b>Customer Support</b>\n\nNeed help or facing any issues? Click the button below to message our support team."
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 Contact Support", url=SUPPORT_USERNAME)],
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
