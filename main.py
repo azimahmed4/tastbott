@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramServerError, TelegramNetworkError
 from config import BOT_TOKEN
 from middlewares.force_join import ForceSubMiddleware
+from middlewares.maintenance import MaintenanceMiddleware
 
 # সবগুলো রাউটার ইমপোর্ট করা হচ্ছে
 from handlers.start import router as start_router
@@ -22,6 +23,8 @@ async def main():
     # মিডলওয়্যার যুক্ত করা
     dp.message.middleware(ForceSubMiddleware())
     dp.callback_query.middleware(ForceSubMiddleware())
+    dp.message.middleware(MaintenanceMiddleware())
+    dp.callback_query.middleware(MaintenanceMiddleware())
 
     # সব রাউটার ডিসপ্যাচারে যুক্ত করা
     dp.include_router(start_router)
