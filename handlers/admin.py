@@ -33,7 +33,7 @@ async def get_admin_menu():
     """অ্যাডমিন প্যানেলের মূল মেনু (Maintenance Status সহ)"""
     is_maintenance = await get_bot_status()
     
-    # 🟢 Maintenance বাটনের স্টাইল ডায়নামিক হবে
+    # 🟢 Maintenance বাটনের স্টাইল ডায়নামিক হবে
     m_text = "🛠️ Turn Maintenance OFF" if is_maintenance else "⚙️ Turn Maintenance ON"
     m_style = "danger" if is_maintenance else "primary"
     
@@ -54,6 +54,9 @@ async def get_admin_menu():
         [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin", style="danger")]
     ])
 
+# ==========================================
+# 📌 States
+# ==========================================
 class AddSubCatState(StatesGroup):
     category = State()
     name = State()
@@ -63,6 +66,13 @@ class AddProductState(StatesGroup):
     sub_category = State()
     name = State()
     price = State()
+
+# 🟢 NEW: Product Edit & Stock State
+class EditProductState(StatesGroup):
+    waiting_for_price = State()
+    waiting_for_stock = State()
+    product_id = State()
+    old_price = State()
 
 class DeliveryState(StatesGroup):
     waiting_for_key = State()
@@ -122,7 +132,6 @@ async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
     menu = await get_admin_menu()
     await callback.message.edit_reply_markup(reply_markup=menu)
     
-    # 📢 চ্যানেলে অটো-পোস্ট
     if MAIN_CHANNEL_ID:
         try:
             if new_status:
@@ -132,12 +141,10 @@ async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
         except Exception as e:
             print(f"Failed to post in channel: {e}")
             
-    # 📢 ইউজারদের অটো-ব্রডকাস্ট (বট অন হলে)
     if not new_status and db:
         asyncio.create_task(broadcast_live_status(bot))
 
 async def broadcast_live_status(bot: Bot):
-    """বট লাইভ হলে সব ইউজারকে মেসেজ পাঠাবে"""
     users = [doc.id for doc in db.collection('users').stream()]
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Start Bot", url=f"https://t.me/{BOT_USERNAME}")], [InlineKeyboardButton(text="🛒 Shop Now", callback_data="menu_buy")]])
     for uid in users:
@@ -304,7 +311,7 @@ async def process_deposit(callback: CallbackQuery, bot: Bot):
     await callback.message.delete()
 
 # ==========================================
-# 📦 Loop Manual Delivery System (Update)
+# 📦 Loop Manual Delivery System
 # ==========================================
 @router.callback_query(F.data == "admin_orders")
 async def show_pending_orders(callback: CallbackQuery):
@@ -383,7 +390,6 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     
     delivered_items.append(admin_key)
     
-    # 🟢 Loop for Multiple Items
     if current_num < total_qty:
         next_num = current_num + 1
         await state.update_data(current_item_num=next_num, delivered_items=delivered_items)
@@ -394,14 +400,12 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         )
         return
         
-    # All items collected, complete the order
     doc_ref = db.collection('pending_orders').document(order_id)
     doc = doc_ref.get()
     if doc.exists and doc.to_dict().get('status') == 'pending':
         data = doc.to_dict()
         user_id = data.get('user_id')
         
-        # 🟢 Smart Invoice Text (image_2d4a8b.png style)
         delivery_text = (
             f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
             f"🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n"
@@ -529,6 +533,9 @@ async def process_delete_subcat(callback: CallbackQuery):
     callback.data = f"admin_cat_{cat}"
     await show_category_options(callback)
 
+# ==========================================
+# 🟢 EDIT PRODUCT MENU (Price & Stock)
+# ==========================================
 @router.callback_query(F.data.startswith("editp|"))
 async def edit_product_menu(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -540,12 +547,89 @@ async def edit_product_menu(callback: CallbackQuery):
     subcat = product.get('sub_category', 'none')
     back_btn = f"admin_subcat|{cat}|{subcat}" if subcat and subcat != "none" else f"admin_cat_{cat}"
     
-    text = f"📦 <b>Product Details</b>\n\n🔹 <b>Name:</b> {product.get('name')}\n📂 <b>Category:</b> {cat.upper()}\n💲 <b>Price:</b> ${product.get('price')}"
+    stock_count = len(product.get('stock', []))
+    delivery_type = product.get('delivery_type', 'manual')
+    
+    text = (
+        f"📦 <b>Product Details</b>\n\n"
+        f"🔹 <b>Name:</b> {product.get('name')}\n"
+        f"📂 <b>Category:</b> {cat.upper()}\n"
+        f"💲 <b>Current Price:</b> ${product.get('price')}\n"
+        f"🚚 <b>Delivery Type:</b> {delivery_type.title()}\n"
+        f"🔑 <b>Keys in Stock:</b> {stock_count}"
+    )
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
         [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn)]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("updatep|"))
+async def start_update_product(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
+    action = callback.data.split("|")[1]
+    prod_id = callback.data.split("|")[2]
+    
+    product = await get_product(prod_id)
+    if not product: return await callback.answer("❌ Error loading product.")
+    
+    await state.update_data(product_id=prod_id, old_price=product.get('price'), prod_name=product.get('name'))
+    
+    if action == "price":
+        await state.set_state(EditProductState.waiting_for_price)
+        await callback.message.edit_text(f"💲 <b>Update Price for {product.get('name')}</b>\n\nCurrent Price: ${product.get('price')}\n\nEnter the new price below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}")]]))
+    elif action == "stock":
+        await state.set_state(EditProductState.waiting_for_stock)
+        await callback.message.edit_text(f"➕ <b>Add Stock for {product.get('name')}</b>\n\nSend the Access Keys / Account Details below.\n<i>(Send each key in a new line for multiple keys)</i>:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}")]]))
+
+@router.message(EditProductState.waiting_for_price)
+async def process_price_update(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin(message.from_user.id): return
+    try: new_price = float(message.text)
+    except ValueError: return await message.answer("❌ Invalid price format. Try again.")
+    
+    data = await state.get_data()
+    prod_id = data['product_id']
+    old_price = data['old_price']
+    prod_name = data['prod_name']
+    
+    if db:
+        db.collection('products').document(prod_id).update({'price': new_price, 'updated_at': firestore.SERVER_TIMESTAMP})
+        
+    await state.clear()
+    await message.answer(f"✅ Price updated successfully to ${new_price}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}")]]))
+    
+    # 📢 Price Update Alert in Channel
+    if MAIN_CHANNEL_ID and old_price != new_price:
+        trend = "📉 <b>PRICE DROP!</b>" if new_price < old_price else "📈 <b>PRICE UPDATE</b>"
+        channel_text = f"{trend}\n\n📦 <b>{prod_name}</b>\n❌ Old Price: ${old_price}\n✅ <b>New Price: ${new_price}</b>\n\nGet it now from our bot!"
+        buy_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=f"https://t.me/{BOT_USERNAME}?start=buy_{prod_id}")]])
+        try: await bot.send_message(MAIN_CHANNEL_ID, channel_text, reply_markup=buy_btn, parse_mode="HTML")
+        except: pass
+
+@router.message(EditProductState.waiting_for_stock)
+async def process_stock_update(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    keys = message.text.split("\n")
+    valid_keys = [k.strip() for k in keys if k.strip()]
+    
+    if not valid_keys: return await message.answer("❌ No valid keys found. Try again.")
+    
+    data = await state.get_data()
+    prod_id = data['product_id']
+    
+    if db:
+        # Get current stock
+        doc = db.collection('products').document(prod_id).get()
+        if doc.exists:
+            current_stock = doc.to_dict().get('stock', [])
+            current_stock.extend(valid_keys)
+            db.collection('products').document(prod_id).update({'stock': current_stock, 'delivery_type': 'auto', 'updated_at': firestore.SERVER_TIMESTAMP})
+            
+    await state.clear()
+    await message.answer(f"✅ <b>{len(valid_keys)} Keys Added to Stock!</b>\nDelivery Type is now set to <b>Auto</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}")]]))
 
 @router.callback_query(F.data.startswith("delp|"))
 async def process_delete_product(callback: CallbackQuery, bot: Bot):
@@ -559,7 +643,6 @@ async def process_delete_product(callback: CallbackQuery, bot: Bot):
     
     await delete_product(prod_id)
     
-    # 📢 অটো-চ্যানেল পোস্ট (স্টক আউট)
     if MAIN_CHANNEL_ID:
         try: await bot.send_message(MAIN_CHANNEL_ID, f"⚠️ <b>STOCK OUT NOTICE</b>\n\n🚫 <b>{prod_name}</b> is currently out of stock or removed from our shop. Stay tuned for updates!", parse_mode="HTML")
         except: pass
@@ -646,7 +729,6 @@ async def save_new_product(message: Message, state: FSMContext, bot: Bot):
             'updated_at': firestore.SERVER_TIMESTAMP
         })
         
-    # 📢 চ্যানেলে অটো-অ্যানাউন্সমেন্ট (New Product)
     if MAIN_CHANNEL_ID:
         try:
             channel_text = f"🌟 <b>NEW PRODUCT ADDED!</b> 🌟\n\n📦 <b>{data['prod_name']}</b>\n💲 <b>Price:</b> ${price}\n\nAvailable now in our bot!"
