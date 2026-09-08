@@ -10,12 +10,12 @@ EMOJI_BOX = "5368324170671202287"
 EMOJI_MONEY = "5368324170671202288"
 EMOJI_USER = "5368324170671202289"
 EMOJI_DONE = "5368324170671202290"
+EMOJI_SPEAKER = "5368324170671202291" # 📢 চ্যানেলের জন্য
 
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📂 Buy Products", callback_data="menu_buy", style="success", icon_custom_emoji_id=EMOJI_CART),
-            # 🚀 My Orders এর কলব্যাক আপডেট করা হয়েছে পেজিনেশনের সাথে মেলাতে
             InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders|0", style="primary", icon_custom_emoji_id=EMOJI_BOX)
         ],
         [
@@ -34,11 +34,10 @@ def get_main_menu():
 
 def get_join_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        # 🔗 URL বাটনগুলোতে টেলিগ্রাম বাই-ডিফল্ট কালার সাপোর্ট দেয় না, তাই এগুলো নরমাল থাকবে
-        [InlineKeyboardButton(text="📢 OmniSub Updates & Offers", url="https://t.me/omni_sub")],
-        [InlineKeyboardButton(text="📢 𝑪𝑹𝒀𝑷𝑻𝑶 𝑬𝑽𝑬𝑵𝑻 24", url="https://t.me/CRYPTOEVENT24")],
-        [InlineKeyboardButton(text="👥 OmniSub Community & Support", url="https://t.me/OmniSubCSupport")], 
+        # 🚀 সবগুলোতে স্টাইল এবং কাস্টম ইমোজি অ্যাড করা হলো
+        [InlineKeyboardButton(text="📢 OmniSub Updates & Offers", url="https://t.me/omni_sub", style="primary", icon_custom_emoji_id=EMOJI_SPEAKER)],
+        [InlineKeyboardButton(text="📢 𝑪𝑹𝒀𝑷𝑻𝑶 𝑬𝑽𝑬𝑵𝑻 24", url="https://t.me/CRYPTOEVENT24", style="primary", icon_custom_emoji_id=EMOJI_SPEAKER)],
+        [InlineKeyboardButton(text="👥 OmniSub Community & Support", url="https://t.me/OmniSubCSupport", style="primary", icon_custom_emoji_id=EMOJI_USER)], 
         
-        # ✅ ভেরিফাই বাটনে সাকসেস কালার এবং ইমোজি দেওয়া হলো
         [InlineKeyboardButton(text="✅ Verify", callback_data="check_join", style="success", icon_custom_emoji_id=EMOJI_DONE)]
     ])
