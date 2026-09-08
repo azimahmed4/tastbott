@@ -393,7 +393,8 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     if current_num < total_qty:
         next_num = current_num + 1
         await state.update_data(current_item_num=next_num, delivered_items=delivered_items)
-        try: await message.delete() except: pass
+        try: await message.delete()
+        except: pass
         await bot.edit_message_text(f"📝 <b>Delivery Required (Item {next_num} of {total_qty})</b>\n\nPlease send the details for Item #{next_num} below:", 
             chat_id=message.chat.id, message_id=prompt_msg_id, parse_mode="HTML", 
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery")]])
