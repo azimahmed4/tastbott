@@ -20,7 +20,7 @@ from database.crud import (db, get_product, delete_product, add_subcategory, get
 router = Router()
 
 # ==========================================
-# 🎨 PREMIUM EMOJI IDs (আপনার পছন্দমত পরিবর্তন করতে পারবেন)
+# 🎨 PREMIUM EMOJI IDs 
 # ==========================================
 EMOJI_SETTINGS = "5368324170671202286"
 EMOJI_BOX = "5368324170671202287"
@@ -44,17 +44,19 @@ async def get_admin_menu():
             InlineKeyboardButton(text="📦 Pending Orders", callback_data="admin_orders", style="primary", icon_custom_emoji_id=EMOJI_BOX)
         ],
         [
-            InlineKeyboardButton(text="🛒 Manage Products", callback_data="admin_products"),
-            InlineKeyboardButton(text="👥 Users", callback_data="admin_users", icon_custom_emoji_id=EMOJI_USER)
+            InlineKeyboardButton(text="🛒 Manage Products", callback_data="admin_products", style="primary"),
+            InlineKeyboardButton(text="👥 Users", callback_data="admin_users", style="primary", icon_custom_emoji_id=EMOJI_USER)
         ],
         [
-            InlineKeyboardButton(text="📋 Generate Price List", callback_data="admin_price_list", style="primary"),
-            # 🟢 NEW: Today's Deposits Button
-            InlineKeyboardButton(text="📅 Today's Deposits", callback_data="admin_today_deposits", style="primary")
+            InlineKeyboardButton(text="📋 Price List", callback_data="admin_price_list", style="primary"),
+            InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_broadcast", style="primary")
         ],
-        [InlineKeyboardButton(text="📊 Deposit Report", callback_data="admin_report", style="primary")],
-        [InlineKeyboardButton(text="📢 Broadcast Message", callback_data="admin_broadcast", style="primary")],
-        # 🚀 Maintenance Button
+        [
+            InlineKeyboardButton(text="📅 Today's Deposits", callback_data="admin_today_deposits", style="primary"),
+            # 🟢 NEW: Recent Orders Button
+            InlineKeyboardButton(text="📦 Recent Orders (24h)", callback_data="admin_recent_orders", style="primary")
+        ],
+        [InlineKeyboardButton(text="📊 Total Deposit Report", callback_data="admin_report", style="primary")],
         [InlineKeyboardButton(text=m_text, callback_data="toggle_maintenance", style=m_style)],
         [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin", style="danger")]
     ])
@@ -72,7 +74,6 @@ class AddProductState(StatesGroup):
     name = State()
     price = State()
 
-# 🟢 NEW: Product Edit & Stock State
 class EditProductState(StatesGroup):
     waiting_for_price = State()
     waiting_for_stock = State()
@@ -153,7 +154,10 @@ async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
 
 async def broadcast_live_status(bot: Bot):
     users = [doc.id for doc in db.collection('users').stream()]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Start Bot", url=f"https://t.me/{BOT_USERNAME}", style="primary")], [InlineKeyboardButton(text="🛒 Shop Now", callback_data="menu_buy", style="primary")]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Start Bot", url=f"https://t.me/{BOT_USERNAME}", style="primary")], 
+        [InlineKeyboardButton(text="🛒 Shop Now", callback_data="menu_buy", style="primary")]
+    ])
     for uid in users:
         try:
             await bot.send_message(chat_id=int(uid), text="🎉 <b>Great News!</b>\n\nOur bot is completely upgraded and fully <b>LIVE</b> right now! You can continue using our services.", reply_markup=keyboard, parse_mode="HTML")
@@ -246,6 +250,48 @@ async def show_today_deposits(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
+# 🟢 NEW: Recent Orders (Last 24h)
+@router.callback_query(F.data == "admin_recent_orders")
+async def show_recent_orders(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    if not db: return await callback.answer("Database Error", show_alert=True)
+    
+    await callback.answer("Loading recent orders...")
+    
+    time_24h_ago = datetime.now(timezone.utc) - timedelta(hours=24)
+    docs = db.collection('orders').where('timestamp', '>=', time_24h_ago).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
+    
+    total_sales = 0.0
+    total_items = 0
+    orders_list = []
+    
+    for doc in docs:
+        data = doc.to_dict()
+        qty = data.get('qty', 1)
+        price = data.get('total_price', 0.0)
+        prod_name = data.get('product_name', 'Unknown')
+        
+        total_items += qty
+        total_sales += price
+        
+        orders_list.append(f"📦 <b>{prod_name}</b> (x{qty}) - ${price}")
+        
+    if not orders_list:
+        text = "📦 <b>Recent Orders (Last 24h)</b>\n\n⚠️ No orders have been completed in the last 24 hours."
+    else:
+        text = "📦 <b>Recent Orders (Last 24h)</b>\n\n"
+        text += f"📊 <b>Total Items Sold:</b> {total_items}\n"
+        text += f"💰 <b>Total Sales:</b> ${total_sales:.2f}\n\n"
+        text += "🧾 <b>Order Details:</b>\n"
+        
+        for order in orders_list[:25]:
+            text += f"{order}\n"
+            
+        if len(orders_list) > 25:
+            text += f"\n<i>...and {len(orders_list) - 25} more orders.</i>"
+            
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
 # 📋 GENERATE PRICE LIST
@@ -256,7 +302,7 @@ async def price_list_menu(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 VPN", callback_data="plist_cat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="plist_cat_proxy", style="primary")],
         [InlineKeyboardButton(text="🎟️ Premium", callback_data="plist_cat_sub", style="primary"), InlineKeyboardButton(text="🤖 AI Service", callback_data="plist_cat_ai", style="primary")],
-        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="Danger")]
+        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")]
     ])
     await callback.message.edit_text("📋 <b>Generate Price List</b>\n\nWhich category list do you want to generate?", reply_markup=keyboard, parse_mode="HTML")
 
@@ -270,7 +316,7 @@ async def price_list_subcat(callback: CallbackQuery):
         keyboard = []
         for sc in subcats:
             keyboard.append([InlineKeyboardButton(text=f"📂 {sc['name']}", callback_data=f"plist_gen|{cat}|{sc['subcat_id']}", style="primary")])
-        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="admin_price_list", style="primary")])
+        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="admin_price_list", style="danger")])
         await callback.message.edit_text("📂 <b>Select Sub-Category to Generate List:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     else:
         await generate_list_message(callback, cat, "none")
@@ -294,7 +340,7 @@ async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
         msg_text += f"✅ {details['name']} ➔ <b>${details['price']}</b>\n"
         
     msg_text += f"\n🛒 <i>Order now from our bot! @{BOT_USERNAME}</i>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Admin Panel", callback_data="back_to_admin", style="Danger")]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Admin Panel", callback_data="back_to_admin", style="danger")]])
     await callback.message.delete()
     await callback.message.answer(msg_text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -309,10 +355,10 @@ async def show_pending_deposits(callback: CallbackQuery):
     keyboard = []
     for doc in docs:
         data = doc.to_dict()
-        keyboard.append([InlineKeyboardButton(text=f"🧾 {doc.id} | {data.get('amount')} BDT", callback_data=f"viewdep_{doc.id}")])
+        keyboard.append([InlineKeyboardButton(text=f"🧾 {doc.id} | {data.get('amount')} BDT", callback_data=f"viewdep_{doc.id}", style="primary")])
     if not keyboard:
         return await callback.answer("✅ No pending deposits right now!", show_alert=True)
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="Danger")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
     await callback.message.edit_text("⏳ <b>Pending Deposits:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("viewdep_"))
@@ -338,7 +384,7 @@ async def view_single_deposit(callback: CallbackQuery):
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Approve", callback_data=f"appdep_{trxid}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"rejdep_{trxid}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_deposits")]
+        [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_deposits", style="primary")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -390,10 +436,10 @@ async def show_pending_orders(callback: CallbackQuery):
     for doc in docs:
         data = doc.to_dict()
         invoice = data.get('invoice_id', doc.id)
-        keyboard.append([InlineKeyboardButton(text=f"📦 {data.get('product_name')} (x{data.get('qty')})", callback_data=f"vieword_{invoice}")])
+        keyboard.append([InlineKeyboardButton(text=f"📦 {data.get('product_name')} (x{data.get('qty')})", callback_data=f"vieword_{invoice}", style="primary")])
     if not keyboard:
         return await callback.answer("✅ No pending orders right now!", show_alert=True)
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
     await callback.message.edit_text("⏳ <b>Pending Orders:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("vieword_"))
@@ -417,7 +463,7 @@ async def view_single_order(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"deliver_{order_id}", style="success")],
         [InlineKeyboardButton(text="❌ Refund & Reject", callback_data=f"reford_{order_id}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_orders")]
+        [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_orders", style="primary")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -432,7 +478,7 @@ async def start_delivery(callback: CallbackQuery, state: FSMContext):
     
     prompt = await callback.message.edit_text(
         f"📝 <b>Delivery Required (Item 1 of {qty})</b>\n\nPlease send the access key/account details for Item #1 below:", 
-        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery")]])
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]])
     )
     await state.set_state(DeliveryState.waiting_for_key)
     await state.update_data(order_id=order_id, prompt_msg_id=prompt.message_id, current_item_num=1, total_qty=qty, delivered_items=[])
@@ -467,7 +513,7 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
             pass
         await bot.edit_message_text(f"📝 <b>Delivery Required (Item {next_num} of {total_qty})</b>\n\nPlease send the details for Item #{next_num} below:", 
             chat_id=message.chat.id, message_id=prompt_msg_id, parse_mode="HTML", 
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery")]])
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]])
         )
         return
         
@@ -543,10 +589,10 @@ async def manage_products_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     if not is_admin(callback.from_user.id): return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 VPN", callback_data="admin_cat_vpn"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="admin_cat_proxy")],
-        [InlineKeyboardButton(text="🎟️ Premium", callback_data="admin_cat_sub"), InlineKeyboardButton(text="🤖 AI Service", callback_data="admin_cat_ai")],
+        [InlineKeyboardButton(text="🌐 VPN", callback_data="admin_cat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="admin_cat_proxy", style="primary")],
+        [InlineKeyboardButton(text="🎟️ Premium", callback_data="admin_cat_sub", style="primary"), InlineKeyboardButton(text="🤖 AI Service", callback_data="admin_cat_ai", style="primary")],
         [InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product", style="success")],
-        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]
+        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")]
     ])
     await callback.message.edit_text("📂 <b>Manage Products - Categories</b>", reply_markup=keyboard, parse_mode="HTML")
 
@@ -559,16 +605,16 @@ async def show_category_options(callback: CallbackQuery):
     if cat in ['vpn', 'proxy']:
         subcats = await get_subcategories(cat)
         for sc in subcats:
-            keyboard.append([InlineKeyboardButton(text=f"📂 {sc['name']}", callback_data=f"admin_subcat|{cat}|{sc['subcat_id']}")])
-        keyboard.append([InlineKeyboardButton(text="➕ Add Sub-Category", callback_data=f"add_subcat|{cat}")])
+            keyboard.append([InlineKeyboardButton(text=f"📂 {sc['name']}", callback_data=f"admin_subcat|{cat}|{sc['subcat_id']}", style="primary")])
+        keyboard.append([InlineKeyboardButton(text="➕ Add Sub-Category", callback_data=f"add_subcat|{cat}", style="success")])
     else:
         if db:
             docs = db.collection('products').where('category', '==', cat).stream()
             for doc in docs:
                 details = doc.to_dict()
-                keyboard.append([InlineKeyboardButton(text=f"{details.get('name')} | ${details.get('price')}", callback_data=f"editp|{doc.id}")])
+                keyboard.append([InlineKeyboardButton(text=f"{details.get('name')} | ${details.get('price')}", callback_data=f"editp|{doc.id}", style="primary")])
                 
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Categories", callback_data="admin_products")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Categories", callback_data="admin_products", style="danger")])
     await callback.message.edit_text(f"📦 <b>Manage: {cat.upper()}</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("admin_subcat|"))
@@ -584,11 +630,11 @@ async def show_category_products_sub(callback: CallbackQuery):
     keyboard = []
     for doc in docs:
         details = doc.to_dict()
-        keyboard.append([InlineKeyboardButton(text=f"{details.get('name', 'Unknown')} | ${details.get('price', 0.0)}", callback_data=f"editp|{doc.id}")])
+        keyboard.append([InlineKeyboardButton(text=f"{details.get('name', 'Unknown')} | ${details.get('price', 0.0)}", callback_data=f"editp|{doc.id}", style="primary")])
         
     keyboard.append([InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product", style="success")])
     keyboard.append([InlineKeyboardButton(text="🗑️ Delete Sub-Category", callback_data=f"delsubcat|{cat}|{subcat}", style="danger")])
-    keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}", style="primary")])
     
     text = f"📦 <b>Manage Products</b>\n\nSelect a product to edit or delete:"
     if len(keyboard) == 3: 
@@ -638,7 +684,7 @@ async def edit_product_menu(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn)]
+        [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -655,10 +701,10 @@ async def start_update_product(callback: CallbackQuery, state: FSMContext):
     
     if action == "price":
         await state.set_state(EditProductState.waiting_for_price)
-        await callback.message.edit_text(f"💲 <b>Update Price for {product.get('name')}</b>\n\nCurrent Price: ${product.get('price')}\n\nEnter the new price below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}")]]))
+        await callback.message.edit_text(f"💲 <b>Update Price for {product.get('name')}</b>\n\nCurrent Price: ${product.get('price')}\n\nEnter the new price below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
     elif action == "stock":
         await state.set_state(EditProductState.waiting_for_stock)
-        await callback.message.edit_text(f"➕ <b>Add Stock for {product.get('name')}</b>\n\nSend the Access Keys / Account Details below.\n<i>(Send each key in a new line for multiple keys)</i>:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}")]]))
+        await callback.message.edit_text(f"➕ <b>Add Stock for {product.get('name')}</b>\n\nSend the Access Keys / Account Details below.\n<i>(Send each key in a new line for multiple keys)</i>:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
 
 @router.message(EditProductState.waiting_for_price)
 async def process_price_update(message: Message, state: FSMContext, bot: Bot):
@@ -677,7 +723,7 @@ async def process_price_update(message: Message, state: FSMContext, bot: Bot):
         db.collection('products').document(prod_id).update({'price': new_price, 'updated_at': firestore.SERVER_TIMESTAMP})
         
     await state.clear()
-    await message.answer(f"✅ Price updated successfully to ${new_price}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}")]]))
+    await message.answer(f"✅ Price updated successfully to ${new_price}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
     
     # 📢 Price Update Alert in Channel
     if MAIN_CHANNEL_ID and old_price != new_price:
@@ -710,7 +756,7 @@ async def process_stock_update(message: Message, state: FSMContext):
             db.collection('products').document(prod_id).update({'stock': current_stock, 'delivery_type': 'auto', 'updated_at': firestore.SERVER_TIMESTAMP})
             
     await state.clear()
-    await message.answer(f"✅ <b>{len(valid_keys)} Keys Added to Stock!</b>\nDelivery Type is now set to <b>Auto</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}")]]))
+    await message.answer(f"✅ <b>{len(valid_keys)} Keys Added to Stock!</b>\nDelivery Type is now set to <b>Auto</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
 
 @router.callback_query(F.data.startswith("delp|"))
 async def process_delete_product(callback: CallbackQuery, bot: Bot):
@@ -753,7 +799,7 @@ async def save_subcat(message: Message, state: FSMContext):
     cat = data['category']
     await add_subcategory(cat, message.text)
     await state.clear()
-    await message.answer(f"✅ Sub-category added to {cat.upper()}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}")]]))
+    await message.answer(f"✅ Sub-category added to {cat.upper()}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}", style="primary")]]))
 
 # ==========================================
 # 🆕 Add Product
@@ -762,9 +808,9 @@ async def save_subcat(message: Message, state: FSMContext):
 async def add_product_category(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 VPN", callback_data="setcat_vpn"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="setcat_proxy")],
-        [InlineKeyboardButton(text="🎟️ Premium", callback_data="setcat_sub"), InlineKeyboardButton(text="🤖 AI Service", callback_data="setcat_ai")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_products")]
+        [InlineKeyboardButton(text="🌐 VPN", callback_data="setcat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="setcat_proxy", style="primary")],
+        [InlineKeyboardButton(text="🎟️ Premium", callback_data="setcat_sub", style="primary"), InlineKeyboardButton(text="🤖 AI Service", callback_data="setcat_ai", style="primary")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_products", style="danger")]
     ])
     await callback.message.edit_text("📂 <b>Select a Category for the new product:</b>", reply_markup=keyboard, parse_mode="HTML")
 
@@ -777,7 +823,7 @@ async def add_product_subcat(callback: CallbackQuery, state: FSMContext):
         subcats = await get_subcategories(cat)
         if not subcats:
             return await callback.answer("⚠️ Create a sub-category first!", show_alert=True)
-        keyboard = [[InlineKeyboardButton(text=sc['name'], callback_data=f"setsubcat|{sc['subcat_id']}")] for sc in subcats]
+        keyboard = [[InlineKeyboardButton(text=sc['name'], callback_data=f"setsubcat|{sc['subcat_id']}", style="primary")] for sc in subcats]
         await callback.message.edit_text("📂 Select Sub-Category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
         await state.update_data(prod_subcat="none")
@@ -823,7 +869,7 @@ async def save_new_product(message: Message, state: FSMContext, bot: Bot):
             pass
         
     await state.set_state(AddProductState.name)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏹️ Stop Adding (Dashboard)", callback_data="back_to_admin")]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏹️ Stop Adding (Dashboard)", callback_data="back_to_admin", style="danger")]])
     await message.answer(
         f"✅ <b>Product Added!</b>\n📦 {data['prod_name']} - ${price}\n\n"
         "📝 <b>Enter NEXT Product Name:</b>\n<i>(Or click Stop to return to dashboard)</i>", 
@@ -841,7 +887,7 @@ async def manage_users_menu(callback: CallbackQuery, state: FSMContext):
     text = f"👥 <b>User Management</b>\n\n📊 <b>Total Registered Users:</b> {users_count}\n\nClick below to search for a user."
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Search & Edit User", callback_data="search_user", style="primary")],
-        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]
+        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -849,7 +895,7 @@ async def manage_users_menu(callback: CallbackQuery, state: FSMContext):
 async def search_user_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
     await state.set_state(UserManageState.waiting_for_user_id)
-    await callback.message.edit_text("🔍 <b>Enter User ID:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_users")]]), parse_mode="HTML")
+    await callback.message.edit_text("🔍 <b>Enter User ID:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_users", style="danger")]]), parse_mode="HTML")
 
 @router.message(UserManageState.waiting_for_user_id)
 async def search_user_result(message: Message, state: FSMContext):
@@ -874,7 +920,7 @@ async def search_user_result(message: Message, state: FSMContext):
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Add Balance", callback_data=f"addbal_{target_uid}", style="success"), InlineKeyboardButton(text="➖ Deduct Balance", callback_data=f"dedbal_{target_uid}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back", callback_data="search_user")]
+        [InlineKeyboardButton(text="◀️ Back", callback_data="search_user", style="primary")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -885,7 +931,7 @@ async def ask_balance_amount(callback: CallbackQuery, state: FSMContext):
     await state.update_data(action_type=action, target_user=target_uid)
     await state.set_state(UserManageState.waiting_for_amount)
     action_text = "ADD to" if action == "addbal" else "DEDUCT from"
-    await callback.message.edit_text(f"💲 <b>Enter Amount to {action_text} User <code>{target_uid}</code>:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_users")]]), parse_mode="HTML")
+    await callback.message.edit_text(f"💲 <b>Enter Amount to {action_text} User <code>{target_uid}</code>:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_users", style="danger")]]), parse_mode="HTML")
 
 @router.message(UserManageState.waiting_for_amount)
 async def process_balance_change(message: Message, state: FSMContext, bot: Bot):
@@ -917,7 +963,7 @@ async def process_balance_change(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     updated_doc = user_ref.get()
     new_balance = updated_doc.to_dict().get('balance', 0.0) if updated_doc.exists else 0.0
-    await message.answer(f"✅ <b>Success!</b>\n\n👤 <b>User:</b> <code>{target_uid}</code>\n💰 <b>New Balance:</b> ${new_balance:.2f}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin")]]), parse_mode="HTML")
+    await message.answer(f"✅ <b>Success!</b>\n\n👤 <b>User:</b> <code>{target_uid}</code>\n💰 <b>New Balance:</b> ${new_balance:.2f}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
 
 # ==========================================
 # 📢 Broadcast Message
@@ -926,7 +972,7 @@ async def process_balance_change(message: Message, state: FSMContext, bot: Bot):
 async def broadcast_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
     await state.set_state(BroadcastState.waiting_for_message)
-    await callback.message.edit_text("📢 <b>Broadcast Message</b>\n\nSend the message, photo, or video you want to broadcast.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin")]]), parse_mode="HTML")
+    await callback.message.edit_text("📢 <b>Broadcast Message</b>\n\nSend the message, photo, or video you want to broadcast.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin", style="danger")]]), parse_mode="HTML")
 
 @router.message(BroadcastState.waiting_for_message)
 async def receive_broadcast_message(message: Message, state: FSMContext):
@@ -936,10 +982,10 @@ async def receive_broadcast_message(message: Message, state: FSMContext):
     if db:
         for doc in db.collection('products').stream():
             details = doc.to_dict()
-            keyboard.append([InlineKeyboardButton(text=f"🔗 Attach: {details['name']}", callback_data=f"bc_btn|{doc.id}")])
+            keyboard.append([InlineKeyboardButton(text=f"🔗 Attach: {details['name']}", callback_data=f"bc_btn|{doc.id}", style="primary")])
             
-    keyboard.append([InlineKeyboardButton(text="⏭️ Send Without Button", callback_data="bc_btn|none")])
-    keyboard.append([InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin")])
+    keyboard.append([InlineKeyboardButton(text="⏭️ Send Without Button", callback_data="bc_btn|none", style="primary")])
+    keyboard.append([InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin", style="danger")])
     await state.set_state(BroadcastState.waiting_for_button)
     await message.answer("🛒 <b>Attach a Product Button?</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
@@ -968,4 +1014,4 @@ async def process_broadcast_send(callback: CallbackQuery, state: FSMContext, bot
         except Exception: 
             pass 
             
-    await callback.message.edit_text(f"✅ <b>Broadcast Complete!</b>\n\nMessage sent to <b>{success_count}</b> users.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Dashboard", callback_data="back_to_admin")]]), parse_mode="HTML")
+    await callback.message.edit_text(f"✅ <b>Broadcast Complete!</b>\n\nMessage sent to <b>{success_count}</b> users.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Dashboard", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
