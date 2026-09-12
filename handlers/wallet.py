@@ -295,8 +295,23 @@ async def receive_sender(message: Message, state: FSMContext):
 
 @router.message(DepositState.waiting_for_trxid)
 async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
-    trxid = message.text
+    trxid = message.text.strip()
     user_id = message.from_user.id
+    
+    # 🟢 NEW: Duplicate TrxID Protection (ফ্রড ফিল্টার)
+    if db:
+        # ১. আগে চেক করবে লোকাল ডিপোজিটে কেউ এই TrxID দিয়েছে কি না
+        existing_deposits = db.collection('pending_deposits').where('trx_id', '==', trxid).limit(1).stream()
+        for _ in existing_deposits:
+            await message.answer("❌ <b>Alert:</b> This Transaction ID has already been submitted in our system!\n\n<i>If you think this is a mistake, please contact support.</i>", parse_mode="HTML")
+            return 
+            
+        # ২. ক্রিপ্টোর ডাটাবেসেও চেক করে নেবে (বাড়তি সিকিউরিটির জন্য)
+        used_trx_doc = db.collection('used_trx').document(trxid).get()
+        if used_trx_doc.exists:
+            await message.answer("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
+            return
+
     user_data = await state.get_data()
     
     method_name = user_data.get("payment_method")
