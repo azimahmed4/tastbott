@@ -3,6 +3,7 @@
 # Purpose: ডিরেক্ট ডিপোজিট সিস্টেম (Binance/Bybit API Auto Verify এবং Local Payment)
 # ==========================================
 import os
+import time  # 🚀 ক্যাশ সিস্টেমের জন্য যুক্ত করা হলো
 import asyncio
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -156,25 +157,46 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# ⚡ CRYPTO API VERIFICATION LOGIC
+# ⚡ CRYPTO API VERIFICATION LOGIC (WITH ANTI-BAN CACHE)
 # ==========================================
+# 🟢 NEW: Anti-Ban Cache System
+BINANCE_CACHE = {
+    "data": [],
+    "last_update": 0
+}
+
 def verify_crypto_pay(trx_id: str, platform: str):
+    global BINANCE_CACHE
+    
     if platform == "binance":
         if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
             return {"status": "error", "message": "Binance API keys not set."}
         try:
-            client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
-            history = client.get_pay_trade_history(limit=100)
-            if history.get('code') == '000000' and 'data' in history:
-                for tx in history['data']:
-                    if tx.get('orderId') == trx_id or tx.get('transactionId') == trx_id:
-                        if tx.get('fundsDetail'):
-                            amount = sum([float(f['amount']) for f in tx['fundsDetail']])
-                        else:
-                            amount = float(tx.get('amount', 0))
-                        return {"status": "success", "amount": amount, "currency": tx.get('currency', 'USDT')}
-            return {"status": "failed", "message": "Transaction not found."}
+            current_time = time.time()
+            
+            # 🚀 Anti-Ban Logic: 60 সেকেন্ডে মাত্র ১ বার API কল হবে!
+            if current_time - BINANCE_CACHE["last_update"] > 60:
+                client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+                history = client.get_pay_trade_history(limit=100)
+                
+                if history.get('code') == '000000' and 'data' in history:
+                    BINANCE_CACHE["data"] = history['data']
+                    BINANCE_CACHE["last_update"] = current_time
+            
+            # ক্যাশ (মেমোরি) থেকে ট্রানজেকশন খুঁজবে
+            for tx in BINANCE_CACHE["data"]:
+                if tx.get('orderId') == trx_id or tx.get('transactionId') == trx_id:
+                    if tx.get('fundsDetail'):
+                        amount = sum([float(f['amount']) for f in tx['fundsDetail']])
+                    else:
+                        amount = float(tx.get('amount', 0))
+                    return {"status": "success", "amount": amount, "currency": tx.get('currency', 'USDT')}
+            
+            return {"status": "failed", "message": "Transaction not found. Please wait 1 minute and try again."}
+            
         except Exception as e:
+            if "Way too much request weight" in str(e) or "-1003" in str(e):
+                return {"status": "failed", "message": "Binance server is busy. Please wait 1 minute and try again."}
             return {"status": "error", "message": str(e)}
 
     elif platform in ["bybit", "bybitaddress"]:
@@ -300,13 +322,13 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     
     # 🟢 NEW: Duplicate TrxID Protection (ফ্রড ফিল্টার)
     if db:
-        # ১. আগে চেক করবে লোকাল ডিপোজিটে কেউ এই TrxID দিয়েছে কি না
+        # ১. আগে চেক করবে লোকাল ডিপোজিটে কেউ এই TrxID দিয়েছে কি না
         existing_deposits = db.collection('pending_deposits').where('trx_id', '==', trxid).limit(1).stream()
         for _ in existing_deposits:
             await message.answer("❌ <b>Alert:</b> This Transaction ID has already been submitted in our system!\n\n<i>If you think this is a mistake, please contact support.</i>", parse_mode="HTML")
             return 
             
-        # ২. ক্রিপ্টোর ডাটাবেসেও চেক করে নেবে (বাড়তি সিকিউরিটির জন্য)
+        # ২. ক্রিপ্টোর ডাটাবেসেও চেক করে নেবে (বাড়তি সিকিউরিটির জন্য)
         used_trx_doc = db.collection('used_trx').document(trxid).get()
         if used_trx_doc.exists:
             await message.answer("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
