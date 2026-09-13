@@ -13,7 +13,8 @@ from firebase_admin import firestore
 from binance.client import Client  
 from pybit.unified_trading import HTTP  # 🚀 Bybit API লাইব্রেরি
 
-from database.crud import db, create_pending_deposit, save_deposit_history
+# 🟢 NEW: get_all_payment_methods ইমপোর্ট করা হলো
+from database.crud import db, create_pending_deposit, save_deposit_history, get_all_payment_methods
 from config import ADMIN_IDS
 
 router = Router()
@@ -26,7 +27,7 @@ EMOJI_CART = "5368324170671202286"
 EMOJI_DONE = "5368324170671202287"
 
 # ==========================================
-# ⚙️ API KEYS & METHODS CONFIGURATION
+# ⚙️ API KEYS CONFIGURATION
 # ==========================================
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
@@ -45,18 +46,6 @@ if BYBIT_API_KEY and BYBIT_SECRET_KEY:
 else:
     print("⚠️ [WARNING] Bybit API Keys MISSING! Auto-Verify won't work.")
 
-CRYPTO_METHODS = {
-    "binance": {"name": "Binance Pay", "pay_id": "1126025983"},
-    "bybit": {"name": "Bybit Internal Transfer", "pay_id": "127145762"},
-    "bybitaddress": {"name": "USDT (BEP20)", "address": "0x822ee632c8223cb5b0457e6a8a36221bbe52a87c"} 
-}
-
-LOCAL_METHODS = {
-    "bkash": {"name": "bKash", "number": "01308618044"},
-    "nagad": {"name": "Nagad", "number": "01308618044"},
-    "rocket": {"name": "Rocket", "number": "01308618044"}
-}
-
 # ==========================================
 # 📌 States
 # ==========================================
@@ -70,31 +59,46 @@ class DepositState(StatesGroup):
     method_type = None     
 
 # ==========================================
-# 🏦 DIRECT DEPOSIT MENU 
+# 🏦 DIRECT DEPOSIT MENU (Dynamic from Database)
 # ==========================================
 @router.callback_query(F.data == "menu_wallet")
 async def show_deposit_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear() 
-    keyboard = [
-        [
-            InlineKeyboardButton(text=CRYPTO_METHODS["binance"]["name"], callback_data="dep_crypto_binance", style="primary", icon_custom_emoji_id=EMOJI_MONEY),
-            InlineKeyboardButton(text=CRYPTO_METHODS["bybit"]["name"], callback_data="dep_crypto_bybit", style="primary", icon_custom_emoji_id=EMOJI_MONEY)
-        ],
-        [
-            InlineKeyboardButton(text=CRYPTO_METHODS["bybitaddress"]["name"], callback_data="dep_crypto_bybitaddress", style="primary", icon_custom_emoji_id=EMOJI_MONEY)
-        ],
-        [
-            InlineKeyboardButton(text=LOCAL_METHODS["bkash"]["name"], callback_data="dep_local_bkash", style="primary"),
-            InlineKeyboardButton(text=LOCAL_METHODS["nagad"]["name"], callback_data="dep_local_nagad", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text=LOCAL_METHODS["rocket"]["name"], callback_data="dep_local_rocket", style="primary")
-        ],
-        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
-    ]
+    
+    # 🟢 ফায়ারবেস থেকে লাইভ পেমেন্ট মেথডগুলো আনা হচ্ছে
+    methods = await get_all_payment_methods()
+    
+    crypto_buttons = []
+    local_buttons = []
+    
+    # যে মেথডগুলো ON (is_active = True) আছে, শুধু সেগুলোই বাটনে অ্যাড হবে
+    for key, data in methods.items():
+        if data.get("is_active", True):
+            btn = InlineKeyboardButton(text=data["name"], callback_data=f"dep_{data['type']}_{key}", style="primary", icon_custom_emoji_id=EMOJI_MONEY)
+            if data['type'] == 'crypto':
+                crypto_buttons.append(btn)
+            else:
+                local_buttons.append(btn)
+                
+    keyboard_layout = []
+    
+    # বাটনগুলো দুই কলামে সাজানো
+    for i in range(0, len(crypto_buttons), 2):
+        keyboard_layout.append(crypto_buttons[i:i+2])
+        
+    for i in range(0, len(local_buttons), 2):
+        keyboard_layout.append(local_buttons[i:i+2])
+        
+    keyboard_layout.append([InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")])
     
     text = "🏦 <b>Deposit Funds</b>\n\nChoose your preferred payment method below:"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+    
+    # যদি কোনো পেমেন্ট মেথড ON না থাকে
+    if not crypto_buttons and not local_buttons:
+        text = "🏦 <b>Deposit Funds</b>\n\n⚠️ Deposit system is currently disabled by the admin."
+        keyboard_layout = [[InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]]
+        
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_layout), parse_mode="HTML")
 
 # ==========================================
 # 🔄 PAYMENT METHOD SELECTION PROCESS
@@ -105,11 +109,16 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
     m_type = parts[1] 
     m_key = parts[2]  
     
-    # 🚀 Crypto Flow (Binance, Bybit & Address)
-    if m_type == "crypto":
-        method_info = CRYPTO_METHODS.get(m_key, {})
-        method_name = method_info.get("name", "Crypto Payment")
+    methods = await get_all_payment_methods()
+    method_info = methods.get(m_key)
+    
+    if not method_info or not method_info.get("is_active", True):
+        return await callback.answer("❌ This payment method is currently disabled.", show_alert=True)
         
+    method_name = method_info.get("name", "Payment")
+    
+    # 🚀 Crypto Flow
+    if m_type == "crypto":
         await state.update_data(payment_method=method_name, method_key=m_key, method_type="crypto")
         await state.set_state(DepositState.waiting_for_crypto_trxid)
         
@@ -141,9 +150,6 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         
     # 🚀 Local Flow
     else:
-        method_info = LOCAL_METHODS.get(m_key, {})
-        method_name = method_info.get("name", "Local Payment")
-        
         await state.update_data(payment_method=method_name, method_key=m_key, method_type="local")
         await state.set_state(DepositState.waiting_for_amount)
         
@@ -159,7 +165,6 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
 # ==========================================
 # ⚡ CRYPTO API VERIFICATION LOGIC (WITH ANTI-BAN CACHE)
 # ==========================================
-# 🟢 NEW: Anti-Ban Cache System
 BINANCE_CACHE = {
     "data": [],
     "last_update": 0
@@ -174,7 +179,6 @@ def verify_crypto_pay(trx_id: str, platform: str):
         try:
             current_time = time.time()
             
-            # 🚀 Anti-Ban Logic: 60 সেকেন্ডে মাত্র ১ বার API কল হবে!
             if current_time - BINANCE_CACHE["last_update"] > 60:
                 client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
                 history = client.get_pay_trade_history(limit=100)
@@ -183,7 +187,6 @@ def verify_crypto_pay(trx_id: str, platform: str):
                     BINANCE_CACHE["data"] = history['data']
                     BINANCE_CACHE["last_update"] = current_time
             
-            # ক্যাশ (মেমোরি) থেকে ট্রানজেকশন খুঁজবে
             for tx in BINANCE_CACHE["data"]:
                 if tx.get('orderId') == trx_id or tx.get('transactionId') == trx_id:
                     if tx.get('fundsDetail'):
@@ -283,18 +286,30 @@ async def receive_amount(message: Message, state: FSMContext):
     if not message.text.replace('.', '', 1).isdigit():
         return await message.answer("⚠️ Please enter a valid number:")
         
-    await state.update_data(deposit_amount=float(message.text))
+    amount = float(message.text)
+    
+    # 🟢 NEW: Minimum 20 BDT Validation
+    if amount < 20:
+        return await message.answer("⚠️ <b>Minimum deposit amount is 20 BDT.</b>\n\nPlease enter an amount of 20 or more:", parse_mode="HTML")
+        
+    await state.update_data(deposit_amount=amount)
     await state.set_state(DepositState.waiting_for_sender) 
     
     data = await state.get_data()
     method_name = data.get("payment_method", "Payment")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
-    await message.answer(f"📱 <b>Which account will you Send from?</b>\n<i>(Type your {method_name} number below)</i>", reply_markup=keyboard, parse_mode="HTML")
+    await message.answer(f"📱 <b>Which account will you Send from?</b>\n<i>(Type your 11-digit {method_name} number below)</i>", reply_markup=keyboard, parse_mode="HTML")
 
 @router.message(DepositState.waiting_for_sender)
 async def receive_sender(message: Message, state: FSMContext):
-    await state.update_data(sender_number=message.text)
+    sender_num = message.text.strip()
+    
+    # 🟢 NEW: Exactly 11 Digits Validation for Phone Number
+    if not sender_num.isdigit() or len(sender_num) != 11:
+        return await message.answer("⚠️ <b>Invalid Number!</b>\n\nPlease enter exactly 11 digits for your sender number (e.g., 01712345678):", parse_mode="HTML")
+        
+    await state.update_data(sender_number=sender_num)
     await state.set_state(DepositState.waiting_for_trxid) 
     
     data = await state.get_data()
@@ -302,7 +317,9 @@ async def receive_sender(message: Message, state: FSMContext):
     method_name = data.get("payment_method", "Payment")
     method_key = data.get("method_key", "bkash")
     
-    admin_receiving_number = LOCAL_METHODS.get(method_key, {}).get("number", "Unknown")
+    # ডাটাবেস থেকে নাম্বার নিয়ে আসা
+    methods = await get_all_payment_methods()
+    admin_receiving_number = methods.get(method_key, {}).get("number", "Unknown")
     currency = "BDT"
     
     instruction = (
@@ -320,15 +337,12 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     trxid = message.text.strip()
     user_id = message.from_user.id
     
-    # 🟢 NEW: Duplicate TrxID Protection (ফ্রড ফিল্টার)
     if db:
-        # ১. আগে চেক করবে লোকাল ডিপোজিটে কেউ এই TrxID দিয়েছে কি না
         existing_deposits = db.collection('pending_deposits').where('trx_id', '==', trxid).limit(1).stream()
         for _ in existing_deposits:
             await message.answer("❌ <b>Alert:</b> This Transaction ID has already been submitted in our system!\n\n<i>If you think this is a mistake, please contact support.</i>", parse_mode="HTML")
             return 
             
-        # ২. ক্রিপ্টোর ডাটাবেসেও চেক করে নেবে (বাড়তি সিকিউরিটির জন্য)
         used_trx_doc = db.collection('used_trx').document(trxid).get()
         if used_trx_doc.exists:
             await message.answer("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
