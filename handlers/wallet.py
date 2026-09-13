@@ -157,7 +157,7 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
             f"📱 <b>{method_name} (Manual Verification)</b>\n\n"
             "🔹 <b>Minimum Deposit:</b> 20 BDT\n\n"
             "⚠️ <b>How much money do you want to deposit?</b>\n"
-            "<i>(Type the amount in BDT below. Example: 100)</i>"
+            "<i>(Type the amount in BDT below. Example: 20)</i>"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
         await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
@@ -307,7 +307,7 @@ async def receive_sender(message: Message, state: FSMContext):
     
     # 🟢 NEW: Exactly 11 Digits Validation for Phone Number
     if not sender_num.isdigit() or len(sender_num) != 11:
-        return await message.answer("⚠️ <b>Invalid Number!</b>\n\nPlease enter exactly 11 digits for your sender number (e.g., 01712345678):", parse_mode="HTML")
+        return await message.answer("⚠️ <b>Invalid Number!</b>\n\nPlease enter exactly 11 digits for your sender number (e.g., 01308618044):", parse_mode="HTML")
         
     await state.update_data(sender_number=sender_num)
     await state.set_state(DepositState.waiting_for_trxid) 
