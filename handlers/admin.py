@@ -1,1172 +1,391 @@
 # ==========================================
-# File: handlers/admin.py
-# Purpose: বটের অ্যাডমিন প্যানেল, ডেলিভারি, প্রোডাক্ট ম্যানেজমেন্ট এবং প্রাইস লিস্ট
+# File: handlers/wallet.py
+# Purpose: ডিরেক্ট ডিপোজিট সিস্টেম (Binance/Bybit API Auto Verify এবং Local Payment)
 # ==========================================
-import time
+import os
+import time  
+import threading  # 🚀 Race-condition ঠেকানোর জন্য Lock
 import asyncio
-from datetime import datetime, timedelta, timezone, time as dt_time
 from aiogram import Router, F, Bot
-from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
+from binance.client import Client  
+from pybit.unified_trading import HTTP  # 🚀 Bybit API লাইব্রেরি
 
-from config import ADMIN_IDS, MAIN_CHANNEL_ID, BOT_USERNAME
-# 🟢 NEW: get_all_payment_methods, update_payment_method ইমপোর্ট করা হলো
-from database.crud import (db, get_product, delete_product, add_subcategory, get_subcategories, 
-                           delete_subcategory, get_products_by_category, save_deposit_history, 
-                           get_deposit_statement, set_bot_status, get_bot_status,
-                           get_all_payment_methods, update_payment_method)
+from database.crud import db, create_pending_deposit, save_deposit_history, get_all_payment_methods
+from config import ADMIN_IDS
 
 router = Router()
 
 # ==========================================
 # 🎨 PREMIUM EMOJI IDs 
 # ==========================================
-EMOJI_SETTINGS = "5368324170671202286"
-EMOJI_BOX = "5368324170671202287"
 EMOJI_MONEY = "5368324170671202288"
-EMOJI_USER = "5368324170671202289"
+EMOJI_CART = "5368324170671202286"
+EMOJI_DONE = "5368324170671202287"
 
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+# ==========================================
+# ⚙️ API KEYS CONFIGURATION
+# ==========================================
+BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
+BYBIT_API_KEY = os.environ.get("BYBIT_API_KEY")
+BYBIT_SECRET_KEY = os.environ.get("BYBIT_SECRET_KEY")
 
-async def get_admin_menu():
-    """অ্যাডমিন প্যানেলের মূল মেনু (Maintenance Status সহ)"""
-    is_maintenance = await get_bot_status()
-    
-    # 🟢 Maintenance বাটনের স্টাইল ডায়নামিক হবে
-    m_text = "🛠️ Turn Maintenance OFF" if is_maintenance else "⚙️ Turn Maintenance ON"
-    m_style = "danger" if is_maintenance else "primary"
-    
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⏳ Pending Deposits", callback_data="admin_deposits", style="primary", icon_custom_emoji_id=EMOJI_MONEY),
-            InlineKeyboardButton(text="📦 Pending Orders", callback_data="admin_orders", style="primary", icon_custom_emoji_id=EMOJI_BOX)
-        ],
-        [
-            InlineKeyboardButton(text="🛒 Manage Products", callback_data="admin_products", style="primary"),
-            InlineKeyboardButton(text="👥 Users", callback_data="admin_users", style="primary", icon_custom_emoji_id=EMOJI_USER)
-        ],
-        [
-            InlineKeyboardButton(text="📋 Price List", callback_data="admin_price_list", style="primary"),
-            InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_broadcast", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="📅 Today's Deposits", callback_data="admin_today_deposits", style="primary"),
-            # 🟢 UPDATED: Recent Orders -> Today's Orders (Midnight Reset)
-            InlineKeyboardButton(text="📦 Today's Orders", callback_data="admin_recent_orders", style="primary")
-        ],
-        # 🟢 NEW: Payment Settings Button
-        [
-            InlineKeyboardButton(text="⚙️ Payment Settings", callback_data="admin_payment_settings", style="primary", icon_custom_emoji_id=EMOJI_SETTINGS),
-            InlineKeyboardButton(text="📊 Total Deposit Report", callback_data="admin_report", style="primary")
-        ],
-        [InlineKeyboardButton(text=m_text, callback_data="toggle_maintenance", style=m_style)],
-        [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin", style="danger")]
-    ])
+if BINANCE_API_KEY and BINANCE_SECRET_KEY:
+    masked_key = BINANCE_API_KEY[:5] + "********"
+    print(f"✅ [SUCCESS] Binance API Keys loaded! (Key: {masked_key})")
+else:
+    print("⚠️ [WARNING] Binance API Keys MISSING! Auto-Verify won't work.")
+
+if BYBIT_API_KEY and BYBIT_SECRET_KEY:
+    masked_key = BYBIT_API_KEY[:5] + "********"
+    print(f"✅ [SUCCESS] Bybit API Keys loaded! (Key: {masked_key})")
+else:
+    print("⚠️ [WARNING] Bybit API Keys MISSING! Auto-Verify won't work.")
 
 # ==========================================
 # 📌 States
 # ==========================================
-class AddSubCatState(StatesGroup):
-    category = State()
-    name = State()
-
-class AddProductState(StatesGroup):
-    category = State()
-    sub_category = State()
-    name = State()
-    price = State()
-
-class EditProductState(StatesGroup):
-    waiting_for_price = State()
-    waiting_for_stock = State()
-    product_id = State()
-    old_price = State()
-    prod_name = State()
-
-class DeliveryState(StatesGroup):
-    waiting_for_key = State()
-    order_id = State()
-    prompt_msg_id = State()
-    current_item_num = State()
-    total_qty = State()
-    delivered_items = State()
-
-class UserManageState(StatesGroup):
-    waiting_for_user_id = State()
-    waiting_for_amount = State()
-    action_type = None 
-    target_user = None
-
-class BroadcastState(StatesGroup):
-    waiting_for_message = State()
-    waiting_for_button = State()
-
-# 🟢 NEW: Payment Settings Edit State
-class PaymentSettingState(StatesGroup):
-    waiting_for_new_value = State()
-    method_key = State()
-    method_data = State()
-    edit_type = State() # 'number' or 'pay_id'
-
-@router.message(Command("admin"))
-async def show_admin_panel(message: Message, state: FSMContext):
-    await state.clear()
-    if not is_admin(message.from_user.id): return 
-    menu = await get_admin_menu()
-    await message.answer("👨‍💻 <b>Admin Control Panel</b>\n\nSelect an action below:", reply_markup=menu, parse_mode="HTML")
-
-@router.callback_query(F.data == "close_admin")
-async def close_admin_panel(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    if is_admin(callback.from_user.id): 
-        await callback.message.delete()
-
-@router.callback_query(F.data == "back_to_admin")
-async def back_to_admin(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    if is_admin(callback.from_user.id):
-        menu = await get_admin_menu()
-        try:
-            await callback.message.edit_text("👨‍💻 <b>Admin Control Panel</b>", reply_markup=menu, parse_mode="HTML")
-        except:
-            await callback.message.delete()
-            await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>", reply_markup=menu, parse_mode="HTML")
+class DepositState(StatesGroup):
+    waiting_for_amount = State()         
+    waiting_for_sender = State()
+    waiting_for_trxid = State()          # Local-এর জন্য
+    waiting_for_crypto_trxid = State()   # 🚀 Crypto-এর জন্য
+    payment_method = None  
+    method_key = None      
+    method_type = None     
 
 # ==========================================
-# ⚙️ MAINTENANCE MODE TOGGLE
+# 🏦 DIRECT DEPOSIT MENU (Dynamic from Database)
 # ==========================================
-@router.callback_query(F.data == "toggle_maintenance")
-async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
-    if not is_admin(callback.from_user.id): return
+@router.callback_query(F.data == "menu_wallet")
+async def show_deposit_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear() 
     
-    current_status = await get_bot_status()
-    new_status = not current_status
-    await set_bot_status(new_status)
-    
-    status_text = "ON" if new_status else "OFF (Live)"
-    await callback.answer(f"Maintenance Mode is now {status_text}!", show_alert=True)
-    
-    menu = await get_admin_menu()
-    await callback.message.edit_reply_markup(reply_markup=menu)
-    
-    if MAIN_CHANNEL_ID:
-        try:
-            if new_status:
-                await bot.send_message(MAIN_CHANNEL_ID, "🛠️ <b>System Update Notice</b>\n\nOur bot is currently undergoing maintenance and upgrades. Please wait patiently. We will be back soon!", parse_mode="HTML")
-            else:
-                await bot.send_message(MAIN_CHANNEL_ID, "✅ <b>System is Live!</b>\n\nThe maintenance is complete and the bot is fully operational now. Thank you for your patience!", parse_mode="HTML")
-        except Exception as e:
-            print(f"Failed to post in channel: {e}")
-            
-    if not new_status and db:
-        asyncio.create_task(broadcast_live_status(bot))
-
-async def broadcast_live_status(bot: Bot):
-    users = [doc.id for doc in db.collection('users').stream()]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Start Bot", url=f"https://t.me/{BOT_USERNAME}", style="primary")], 
-        [InlineKeyboardButton(text="🛒 Shop Now", callback_data="menu_buy", style="primary")]
-    ])
-    for uid in users:
-        try:
-            await bot.send_message(chat_id=int(uid), text="🎉 <b>Great News!</b>\n\nOur bot is completely upgraded and fully <b>LIVE</b> right now! You can continue using our services.", reply_markup=keyboard, parse_mode="HTML")
-        except:
-            pass
-
-# ==========================================
-# ⚙️ PAYMENT SETTINGS PANEL (ON/OFF & Edit)
-# ==========================================
-@router.callback_query(F.data == "admin_payment_settings")
-async def show_payment_settings(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    
+    # 🟢 ফায়ারবেস থেকে লাইভ পেমেন্ট মেথডগুলো আনা হচ্ছে
     methods = await get_all_payment_methods()
-    keyboard = []
     
+    crypto_buttons = []
+    local_buttons = []
+    
+    # যে মেথডগুলো ON (is_active = True) আছে, শুধু সেগুলোই বাটনে অ্যাড হবে
     for key, data in methods.items():
-        status_emoji = "✅" if data.get('is_active', True) else "❌"
-        # Edit Data: pay_id or address or number
-        if data.get('type') == 'local':
-            display_val = data.get('number', 'N/A')
-        else:
-            display_val = data.get('pay_id') or data.get('address') or 'N/A'
-            # যদি অ্যাড্রেস অনেক বড় হয়, একটু ছোট করে দেখানো
-            if len(display_val) > 15:
-                display_val = display_val[:6] + "..." + display_val[-4:]
+        if data.get("is_active", True):
+            btn = InlineKeyboardButton(text=data["name"], callback_data=f"dep_{data['type']}_{key}", style="primary", icon_custom_emoji_id=EMOJI_MONEY)
+            if data['type'] == 'crypto':
+                crypto_buttons.append(btn)
+            else:
+                local_buttons.append(btn)
                 
-        # Main Method Button (for viewing details/editing)
-        btn_text = f"{status_emoji} {data['name']} | {display_val}"
-        keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"payset_edit|{key}", style="primary")])
-        
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
-    
-    text = "⚙️ <b>Payment Settings</b>\n\nClick on a payment method to turn it ON/OFF or edit its details."
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("payset_edit|"))
-async def edit_single_payment_setting(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    key = callback.data.split("|")[1]
-    
-    methods = await get_all_payment_methods()
-    data = methods.get(key)
-    
-    if not data:
-        return await callback.answer("❌ Error loading payment method.", show_alert=True)
-        
-    status = "ON (Active)" if data.get('is_active', True) else "OFF (Disabled)"
-    toggle_text = "🔴 Turn OFF" if data.get('is_active', True) else "🟢 Turn ON"
-    toggle_style = "danger" if data.get('is_active', True) else "success"
-    
     keyboard_layout = []
-    keyboard_layout.append([InlineKeyboardButton(text=toggle_text, callback_data=f"payset_toggle|{key}", style=toggle_style)])
     
-    # 🟢 UPDATED: শুধুমাত্র লোকাল পেমেন্টের ক্ষেত্রে এডিট বাটন দেখাবে, ক্রিপ্টোর ক্ষেত্রে শুধু ON/OFF 
-    if data.get('type') == 'local':
-        val_label = "Number"
-        current_val = data.get('number', 'N/A')
-        keyboard_layout.append([InlineKeyboardButton(text=f"✏️ Edit {val_label}", callback_data=f"payset_changeval|{key}", style="primary")])
-    else:
-        val_label = "Address/Pay ID"
-        current_val = data.get('pay_id') or data.get('address') or 'N/A'
+    # বাটনগুলো দুই কলামে সাজানো
+    for i in range(0, len(crypto_buttons), 2):
+        keyboard_layout.append(crypto_buttons[i:i+2])
         
-    keyboard_layout.append([InlineKeyboardButton(text="◀️ Back to Settings", callback_data="admin_payment_settings", style="primary")])
+    for i in range(0, len(local_buttons), 2):
+        keyboard_layout.append(local_buttons[i:i+2])
+        
+    keyboard_layout.append([InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")])
     
-    text = (
-        f"⚙️ <b>Edit Payment Method:</b> {data['name']}\n\n"
-        f"🔹 <b>Status:</b> {status}\n"
-        f"🔹 <b>Current {val_label}:</b> <code>{current_val}</code>\n\n"
-    )
+    text = "🏦 <b>Deposit Funds</b>\n\nChoose your preferred payment method below:"
     
-    if data.get('type') == 'crypto':
-        text += "⚠️ <i>Crypto IDs/Addresses cannot be edited for security reasons. You can only turn them ON or OFF.</i>"
-    else:
-        text += "What do you want to do?"
+    if not crypto_buttons and not local_buttons:
+        text = "🏦 <b>Deposit Funds</b>\n\n⚠️ Deposit system is currently disabled by the admin."
+        keyboard_layout = [[InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]]
         
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_layout), parse_mode="HTML")
 
-@router.callback_query(F.data.startswith("payset_toggle|"))
-async def toggle_payment_status(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    key = callback.data.split("|")[1]
+# ==========================================
+# 🔄 PAYMENT METHOD SELECTION PROCESS
+# ==========================================
+@router.callback_query(F.data.startswith("dep_"))
+async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    m_type = parts[1] 
+    m_key = parts[2]  
     
     methods = await get_all_payment_methods()
-    data = methods.get(key)
+    method_info = methods.get(m_key)
     
-    if data:
-        # স্ট্যাটাস উল্টে দেওয়া
-        data['is_active'] = not data.get('is_active', True)
-        await update_payment_method(key, data)
-        await callback.answer(f"✅ Status changed for {data['name']}!")
+    if not method_info or not method_info.get("is_active", True):
+        return await callback.answer("❌ This payment method is currently disabled.", show_alert=True)
         
-        # প্যানেল রিফ্রেশ করা
-        callback.data = f"payset_edit|{key}"
-        await edit_single_payment_setting(callback)
-
-@router.callback_query(F.data.startswith("payset_changeval|"))
-async def prompt_payment_value_change(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    key = callback.data.split("|")[1]
+    method_name = method_info.get("name", "Payment")
     
-    methods = await get_all_payment_methods()
-    data = methods.get(key)
-    if not data: return
-    
-    # যেহেতু এখন শুধু লোকাল পেমেন্ট এডিট করা যাবে
-    if data.get('type') == 'local':
-        val_label = "Number"
-        edit_type = "number"
+    # 🚀 Crypto Flow
+    if m_type == "crypto":
+        await state.update_data(payment_method=method_name, method_key=m_key, method_type="crypto")
+        await state.set_state(DepositState.waiting_for_crypto_trxid)
+        
+        if m_key == "binance":
+            pay_id = method_info.get("pay_id", "Unknown")
+            instruction = (
+                f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
+                f"🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n"
+                f"⚠️ <i>Please send USDT to the Pay ID above. After sending, type your <b>Order ID or Transaction ID (TrxID)</b> below:</i>"
+            )
+        elif m_key == "bybit":
+            pay_id = method_info.get("pay_id", "Unknown")
+            instruction = (
+                f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
+                f"🔹 <b>UID:</b> <code>{pay_id}</code>\n\n"
+                f"⚠️ <i>Please send USDT via <b>'Withdraw -> Internal Transfer'</b> to the UID above. After sending, type your <b>Transaction ID (txID)</b> below:</i>"
+            )
+        elif m_key == "bybitaddress":
+            address = method_info.get("address", "Unknown")
+            instruction = (
+                f"⚡ <b>{method_name} (Auto Verification)</b>\n\n"
+                f"🔹 <b>Supported Networks:</b> BEP20 (BSC)\n"
+                f"🔹 <b>Deposit Address:</b> <code>{address}</code>\n\n"
+                f"⚠️ <i>Please send USDT to the address above. Wait 1-2 minutes for network confirmation, then type your <b>Transaction Hash (TxID)</b> below:</i>"
+            )
+            
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
+        await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
+        
+    # 🚀 Local Flow
     else:
-        return await callback.answer("❌ This method cannot be edited.", show_alert=True)
+        await state.update_data(payment_method=method_name, method_key=m_key, method_type="local")
+        await state.set_state(DepositState.waiting_for_amount)
         
-    await state.update_data(method_key=key, method_data=data, edit_type=edit_type)
-    await state.set_state(PaymentSettingState.waiting_for_new_value)
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"payset_edit|{key}", style="danger")]])
-    await callback.message.edit_text(f"✏️ <b>Enter the new {val_label} for {data['name']}:</b>", reply_markup=keyboard, parse_mode="HTML")
-
-@router.message(PaymentSettingState.waiting_for_new_value)
-async def save_new_payment_value(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): return
-    new_value = message.text.strip()
-    
-    user_data = await state.get_data()
-    key = user_data['method_key']
-    data = user_data['method_data']
-    edit_type = user_data['edit_type']
-    
-    # Update dictionary
-    data[edit_type] = new_value
-    
-    # Save to database
-    await update_payment_method(key, data)
-    await state.clear()
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Settings", callback_data="admin_payment_settings", style="primary")]])
-    await message.answer(f"✅ Successfully updated {data['name']} {edit_type.replace('_', ' ').title()} to: <code>{new_value}</code>", reply_markup=keyboard, parse_mode="HTML")
-
-
-# ==========================================
-# 🟢 DEPOSIT STATEMENT PANEL
-# ==========================================
-@router.callback_query(F.data == "admin_report")
-async def show_deposit_report(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    
-    await callback.answer("Generating Report...")
-    report_data = await get_deposit_statement()
-    
-    if not report_data:
-        text = "📊 <b>TOTAL DEPOSIT STATEMENT</b>\n\n⚠️ No deposit history found yet."
-    else:
-        text = "📊 <b>TOTAL DEPOSIT STATEMENT</b>\n\n"
-        total_usd = 0.0
-        
-        for method, details in report_data.items():
-            amount = details['amount']
-            currency = details['currency']
-            text += f"🔹 <b>{method}:</b> {amount:,.2f} {currency}\n"
-            
-            if currency == "BDT":
-                total_usd += amount / 125.0
-            else:
-                total_usd += amount
-                
-        text += f"\n💰 <b>Estimated Total (USD):</b> ~${total_usd:,.2f}"
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-# 🟢 NEW: Today's Deposits (Midnight Reset Logic)
-@router.callback_query(F.data == "admin_today_deposits")
-async def show_today_deposits(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    if not db: return await callback.answer("Database Error", show_alert=True)
-    
-    await callback.answer("Loading today's transactions...")
-    
-    # বাংলাদেশ সময় (UTC+6) অনুযায়ী আজকের রাত ১২:০০ টা (Midnight) বের করা
-    bdt_tz = timezone(timedelta(hours=6))
-    now_bdt = datetime.now(bdt_tz)
-    today_midnight_bdt = datetime.combine(now_bdt.date(), dt_time.min).replace(tzinfo=bdt_tz)
-    
-    # ফায়ারবেস থেকে রাত ১২টার পর থেকে এখন পর্যন্ত হওয়া ডেটা আনা
-    docs = db.collection('deposit_history').where('timestamp', '>=', today_midnight_bdt).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
-    
-    method_counts = {}
-    trx_list = []
-    total_bdt = 0
-    total_usd = 0
-    
-    for doc in docs:
-        data = doc.to_dict()
-        method = data.get('method', 'Unknown')
-        trx_id = data.get('trx_id', 'Unknown')
-        amount = data.get('amount', 0)
-        currency = data.get('currency', 'BDT')
-        
-        if method not in method_counts:
-            method_counts[method] = 0
-        method_counts[method] += 1
-        
-        if currency == "BDT":
-            total_bdt += amount
-        else:
-            total_usd += amount
-            
-        trx_list.append(f"▪️ <b>{method}:</b> <code>{trx_id}</code> ({amount} {currency})")
-    
-    if not trx_list:
-        text = "📅 <b>Today's Transactions</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n⚠️ No approved transactions found for today."
-    else:
-        text = "📅 <b>Today's Transactions</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n"
-        text += "📊 <b>Summary (Pieces):</b>\n"
-        for m, count in method_counts.items():
-            text += f"🔹 {m}: {count} pcs\n"
-            
-        text += f"\n💰 <b>Total Local (BDT):</b> {total_bdt:,.2f} ৳\n"
-        text += f"💎 <b>Total Crypto (USD):</b> ${total_usd:,.2f}\n\n"
-        
-        text += "🧾 <b>Recent TrxIDs:</b>\n"
-        for trx in trx_list[:25]: 
-            text += f"{trx}\n"
-            
-        if len(trx_list) > 25:
-            text += f"\n<i>...and {len(trx_list) - 25} more transactions.</i>"
-            
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-# 🟢 NEW: Today's Orders (Midnight Reset Logic)
-@router.callback_query(F.data == "admin_recent_orders")
-async def show_recent_orders(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    if not db: return await callback.answer("Database Error", show_alert=True)
-    
-    await callback.answer("Loading today's orders...")
-    
-    # বাংলাদেশ সময় অনুযায়ী রাত ১২টার (Midnight) হিসাব
-    bdt_tz = timezone(timedelta(hours=6))
-    now_bdt = datetime.now(bdt_tz)
-    today_midnight_bdt = datetime.combine(now_bdt.date(), dt_time.min).replace(tzinfo=bdt_tz)
-    
-    docs = db.collection('orders').where('timestamp', '>=', today_midnight_bdt).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
-    
-    total_sales = 0.0
-    total_items = 0
-    orders_list = []
-    
-    for doc in docs:
-        data = doc.to_dict()
-        qty = data.get('qty', 1)
-        price = data.get('total_price', 0.0)
-        prod_name = data.get('product_name', 'Unknown')
-        
-        total_items += qty
-        total_sales += price
-        
-        orders_list.append(f"📦 <b>{prod_name}</b> (x{qty}) - ${price}")
-        
-    if not orders_list:
-        text = "📦 <b>Today's Orders</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n⚠️ No orders have been completed today."
-    else:
-        text = "📦 <b>Today's Orders</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n"
-        text += f"📊 <b>Total Items Sold:</b> {total_items}\n"
-        text += f"💰 <b>Total Sales:</b> ${total_sales:.2f}\n\n"
-        text += "🧾 <b>Order Details:</b>\n"
-        
-        for order in orders_list[:25]:
-            text += f"{order}\n"
-            
-        if len(orders_list) > 25:
-            text += f"\n<i>...and {len(orders_list) - 25} more orders.</i>"
-            
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-# ==========================================
-# 📋 GENERATE PRICE LIST
-# ==========================================
-@router.callback_query(F.data == "admin_price_list")
-async def price_list_menu(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 VPN", callback_data="plist_cat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="plist_cat_proxy", style="primary")],
-        [InlineKeyboardButton(text="🎟️ Premium", callback_data="plist_cat_sub", style="primary"), InlineKeyboardButton(text="🤖 AI Service", callback_data="plist_cat_ai", style="primary")],
-        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")]
-    ])
-    await callback.message.edit_text("📋 <b>Generate Price List</b>\n\nWhich category list do you want to generate?", reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("plist_cat_"))
-async def price_list_subcat(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    cat = callback.data.split("_")[2]
-    
-    if cat in ['vpn', 'proxy']:
-        subcats = await get_subcategories(cat)
-        keyboard = []
-        for sc in subcats:
-            keyboard.append([InlineKeyboardButton(text=f"📂 {sc['name']}", callback_data=f"plist_gen|{cat}|{sc['subcat_id']}", style="primary")])
-        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="admin_price_list", style="danger")])
-        await callback.message.edit_text("📂 <b>Select Sub-Category to Generate List:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-    else:
-        await generate_list_message(callback, cat, "none")
-
-@router.callback_query(F.data.startswith("plist_gen|"))
-async def price_list_generate_callback(callback: CallbackQuery):
-    parts = callback.data.split("|")
-    cat = parts[1]
-    subcat = parts[2]
-    await generate_list_message(callback, cat, subcat)
-
-async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
-    products_dict = await get_products_by_category(cat, subcat)
-    if not products_dict:
-        return await callback.answer("⚠️ No products found in this category!", show_alert=True)
-    
-    cat_display = cat.upper()
-    msg_text = f"🔥 <b>Available {cat_display} Packages</b> 🔥\n\n"
-    
-    for pid, details in products_dict.items():
-        msg_text += f"✅ {details['name']} ➔ <b>${details['price']}</b>\n"
-        
-    msg_text += f"\n🛒 <i>Order now from our bot! @{BOT_USERNAME}</i>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Admin Panel", callback_data="back_to_admin", style="danger")]])
-    await callback.message.delete()
-    await callback.message.answer(msg_text, reply_markup=keyboard, parse_mode="HTML")
-
-# ==========================================
-# 💰 Deposit Approvals
-# ==========================================
-@router.callback_query(F.data == "admin_deposits")
-async def show_pending_deposits(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    if not db: return
-    docs = db.collection('pending_deposits').where('status', '==', 'pending').stream()
-    keyboard = []
-    for doc in docs:
-        data = doc.to_dict()
-        keyboard.append([InlineKeyboardButton(text=f"🧾 {doc.id} | {data.get('amount')} BDT", callback_data=f"viewdep_{doc.id}", style="primary")])
-    if not keyboard:
-        return await callback.answer("✅ No pending deposits right now!", show_alert=True)
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
-    await callback.message.edit_text("⏳ <b>Pending Deposits:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("viewdep_"))
-async def view_single_deposit(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    trxid = callback.data.split("_")[1]
-    if not db: return
-    doc = db.collection('pending_deposits').document(trxid).get()
-    if not doc.exists or doc.to_dict().get('status') != 'pending':
-        return await callback.answer("❌ This request was already processed.", show_alert=True)
-        
-    data = doc.to_dict()
-    amount_bdt = data.get('amount', 0)
-    amount_usd = round(amount_bdt / 125.0, 2) 
-    
-    text = (
-        f"🔍 <b>Deposit Request</b>\n\n"
-        f"👤 <b>User ID:</b> <code>{data.get('user_id')}</code>\n"
-        f"🏦 <b>Method:</b> {data.get('method')}\n"
-        f"📱 <b>Sender:</b> <code>{data.get('sender_number')}</code>\n"
-        f"💵 <b>Amount:</b> {amount_bdt} BDT (~${amount_usd})\n"
-        f"🧾 <b>TrxID:</b> <code>{data.get('trx_id')}</code>\n"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Approve", callback_data=f"appdep_{trxid}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"rejdep_{trxid}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_deposits", style="primary")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("appdep_") | F.data.startswith("rejdep_"))
-async def process_deposit(callback: CallbackQuery, bot: Bot):
-    if not is_admin(callback.from_user.id): return
-    action, trxid = callback.data.split("_")
-    if not db: return
-    doc_ref = db.collection('pending_deposits').document(trxid)
-    doc = doc_ref.get()
-    if not doc.exists or doc.to_dict().get('status') != 'pending':
-        await callback.answer("❌ Already processed or not found.", show_alert=True)
-        await callback.message.delete()
-        return
-        
-    data = doc.to_dict()
-    user_id = data.get('user_id')
-    amount_bdt = data.get('amount', 0)
-    method_name = data.get('method', 'Local Payment')
-    amount_usd = round(amount_bdt / 125.0, 2)
-    
-    if action == "appdep":
-        db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
-        doc_ref.update({'status': 'approved'})
-        await save_deposit_history(user_id=user_id, amount=amount_bdt, method=method_name, trx_id=trxid, currency="BDT")
-        try: 
-            await bot.send_message(user_id, f"🎉 <b>Deposit Approved!</b>\n<b>${amount_usd}</b> added to your wallet.", parse_mode="HTML")
-        except: 
-            pass
-        await callback.answer("✅ Deposit Approved!", show_alert=True)
-    else:
-        doc_ref.update({'status': 'rejected'})
-        try: 
-            await bot.send_message(user_id, f"❌ <b>Deposit Rejected!</b>\nYour request for {amount_bdt} BDT was rejected.", parse_mode="HTML")
-        except: 
-            pass
-        await callback.answer("❌ Deposit Rejected!", show_alert=True)
-    await callback.message.delete()
-
-# ==========================================
-# 📦 Loop Manual Delivery System
-# ==========================================
-@router.callback_query(F.data == "admin_orders")
-async def show_pending_orders(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    if not db: return
-    docs = db.collection('pending_orders').where('status', '==', 'pending').stream()
-    keyboard = []
-    for doc in docs:
-        data = doc.to_dict()
-        invoice = data.get('invoice_id', doc.id)
-        keyboard.append([InlineKeyboardButton(text=f"📦 {data.get('product_name')} (x{data.get('qty')})", callback_data=f"vieword_{invoice}", style="primary")])
-    if not keyboard:
-        return await callback.answer("✅ No pending orders right now!", show_alert=True)
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
-    await callback.message.edit_text("⏳ <b>Pending Orders:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("vieword_"))
-async def view_single_order(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    order_id = callback.data.split("_")[1]
-    if not db: return
-    doc = db.collection('pending_orders').document(order_id).get()
-    if not doc.exists or doc.to_dict().get('status') != 'pending':
-        return await callback.answer("❌ This order was already fulfilled.", show_alert=True)
-        
-    data = doc.to_dict()
-    text = (
-        f"🛒 <b>Pending Order Details</b>\n\n"
-        f"🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n"
-        f"👤 <b>User ID:</b> <code>{data.get('user_id')}</code>\n"
-        f"📦 <b>Product:</b> {data.get('product_name')}\n"
-        f"🔢 <b>Quantity:</b> {data.get('qty')}\n"
-        f"💰 <b>Total Paid:</b> ${data.get('total_price')}\n"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"deliver_{order_id}", style="success")],
-        [InlineKeyboardButton(text="❌ Refund & Reject", callback_data=f"reford_{order_id}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_orders", style="primary")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("deliver_"))
-async def start_delivery(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    order_id = callback.data.split("_")[1]
-    
-    doc = db.collection('pending_orders').document(order_id).get()
-    if not doc.exists: return await callback.answer("Error: Order missing.")
-    qty = int(doc.to_dict().get('qty', 1))
-    
-    prompt = await callback.message.edit_text(
-        f"📝 <b>Delivery Required (Item 1 of {qty})</b>\n\nPlease send the access key/account details for Item #1 below:", 
-        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]])
-    )
-    await state.set_state(DeliveryState.waiting_for_key)
-    await state.update_data(order_id=order_id, prompt_msg_id=prompt.message_id, current_item_num=1, total_qty=qty, delivered_items=[])
-
-@router.callback_query(F.data == "cancel_delivery")
-async def cancel_delivery(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    await state.clear()
-    await callback.message.delete()
-    await callback.answer("Delivery Cancelled.")
-
-@router.message(DeliveryState.waiting_for_key)
-async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
-    if not is_admin(message.from_user.id): return
-    admin_key = message.text
-    user_data = await state.get_data()
-    
-    order_id = user_data['order_id']
-    prompt_msg_id = user_data['prompt_msg_id']
-    current_num = user_data['current_item_num']
-    total_qty = user_data['total_qty']
-    delivered_items = user_data['delivered_items']
-    
-    delivered_items.append(admin_key)
-    
-    if current_num < total_qty:
-        next_num = current_num + 1
-        await state.update_data(current_item_num=next_num, delivered_items=delivered_items)
-        try: 
-            await message.delete()
-        except: 
-            pass
-        await bot.edit_message_text(f"📝 <b>Delivery Required (Item {next_num} of {total_qty})</b>\n\nPlease send the details for Item #{next_num} below:", 
-            chat_id=message.chat.id, message_id=prompt_msg_id, parse_mode="HTML", 
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]])
+        instruction = (
+            f"📱 <b>{method_name} (Manual Verification)</b>\n\n"
+            "🔹 <b>Minimum Deposit:</b> 20 BDT\n\n"
+            "⚠️ <b>How much money do you want to deposit?</b>\n"
+            "<i>(Type the amount in BDT below. Example: 100)</i>"
         )
-        return
-        
-    doc_ref = db.collection('pending_orders').document(order_id)
-    doc = doc_ref.get()
-    if doc.exists and doc.to_dict().get('status') == 'pending':
-        data = doc.to_dict()
-        user_id = data.get('user_id')
-        
-        delivery_text = (
-            f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
-            f"🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n"
-            f"📦 <b>Package:</b> {data.get('product_name')}\n"
-            f"🔢 <b>Quantity:</b> {total_qty}\n"
-            f"💰 <b>Total Price:</b> ${data.get('total_price')}\n"
-            f"➖➖➖➖➖➖➖➖➖➖\n"
-        )
-        
-        for idx, item in enumerate(delivered_items, 1):
-            delivery_text += f"🛍️ <b>Item {idx}:</b>\n<code>{item}</code>\n\n"
-            
-        delivery_text += "➖➖➖➖➖➖➖➖➖➖\n"
-        
-        buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{data.get('product_id')}", style="success")]])
-        
-        try: 
-            await bot.send_message(user_id, delivery_text, parse_mode="HTML", reply_markup=buy_again_kb)
-        except Exception: 
-            pass
-        
-        db.collection('orders').document(order_id).set({
-            'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 
-            'product_id': data.get('product_id'), 'product_name': data.get('product_name'),
-            'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': delivered_items, 
-            'completed_by': 'Admin', 'timestamp': firestore.SERVER_TIMESTAMP
-        })
-        doc_ref.delete()
-        
-    await state.clear()
-    try:
-        await message.delete()
-        await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
-        await message.answer("✅ Order Delivered Successfully!")
-    except Exception: 
-        pass
-
-@router.callback_query(F.data.startswith("reford_"))
-async def refund_order(callback: CallbackQuery, bot: Bot):
-    if not is_admin(callback.from_user.id): return
-    order_id = callback.data.split("_")[1]
-    doc_ref = db.collection('pending_orders').document(order_id)
-    doc = doc_ref.get()
-    if doc.exists and doc.to_dict().get('status') == 'pending':
-        data = doc.to_dict()
-        user_id = data.get('user_id')
-        total_price = data.get('total_price')
-        db.collection('users').document(str(user_id)).update({
-            'balance': firestore.Increment(total_price), 'total_spent': firestore.Increment(-total_price)
-        })
-        doc_ref.delete()
-        try: 
-            await bot.send_message(user_id, f"⚠️ <b>Order Cancelled & Refunded!</b>\n<b>${total_price}</b> returned to wallet.", parse_mode="HTML")
-        except: 
-            pass
-    await callback.message.delete()
-    await callback.answer("Order Rejected & Refunded!", show_alert=True)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
+        await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# 🛒 Manage Products & Sub-Categories
+# ⚡ CRYPTO API VERIFICATION LOGIC (WITH SECURE CACHE & LOCK)
 # ==========================================
-@router.callback_query(F.data == "admin_products")
-async def manage_products_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    if not is_admin(callback.from_user.id): return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 VPN", callback_data="admin_cat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="admin_cat_proxy", style="primary")],
-        [InlineKeyboardButton(text="🎟️ Premium", callback_data="admin_cat_sub", style="primary"), InlineKeyboardButton(text="🤖 AI Service", callback_data="admin_cat_ai", style="primary")],
-        [InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product", style="success")],
-        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")]
-    ])
-    await callback.message.edit_text("📂 <b>Manage Products - Categories</b>", reply_markup=keyboard, parse_mode="HTML")
+BINANCE_CACHE = {
+    "data": [],
+    "last_update": 0
+}
+binance_lock = threading.Lock()  # 🚀 একসাথে একাধিক রিকোয়েস্ট আটকানোর লক
 
-@router.callback_query(F.data.startswith("admin_cat_"))
-async def show_category_options(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    cat = callback.data.split("_")[2] 
+def verify_crypto_pay(trx_id: str, platform: str):
+    global BINANCE_CACHE
     
-    keyboard = []
-    if cat in ['vpn', 'proxy']:
-        subcats = await get_subcategories(cat)
-        for sc in subcats:
-            keyboard.append([InlineKeyboardButton(text=f"📂 {sc['name']}", callback_data=f"admin_subcat|{cat}|{sc['subcat_id']}", style="primary")])
-        keyboard.append([InlineKeyboardButton(text="➕ Add Sub-Category", callback_data=f"add_subcat|{cat}", style="success")])
-    else:
+    if platform == "binance":
+        if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
+            return {"status": "error", "message": "Binance API keys not set."}
+        try:
+            # 🚀 Thread Lock: একজন ইউজারের রিকোয়েস্ট শেষ না হওয়া পর্যন্ত অন্য কেউ API কল করতে পারবে না
+            with binance_lock:
+                current_time = time.time()
+                if current_time - BINANCE_CACHE["last_update"] > 60:
+                    # 🚀 Error Loop Fix: API ফেইল করলেও যেন ৬০ সেকেন্ড লক থাকে, তাই আগেই টাইম আপডেট করে দিচ্ছি
+                    BINANCE_CACHE["last_update"] = current_time 
+                    
+                    client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+                    history = client.get_pay_trade_history(limit=100)
+                    
+                    if history.get('code') == '000000' and 'data' in history:
+                        BINANCE_CACHE["data"] = history['data']
+            
+            # ক্যাশ (মেমোরি) থেকে ট্রানজেকশন খুঁজবে
+            for tx in BINANCE_CACHE["data"]:
+                if tx.get('orderId') == trx_id or tx.get('transactionId') == trx_id:
+                    if tx.get('fundsDetail'):
+                        amount = sum([float(f['amount']) for f in tx['fundsDetail']])
+                    else:
+                        amount = float(tx.get('amount', 0))
+                    return {"status": "success", "amount": amount, "currency": tx.get('currency', 'USDT')}
+            
+            return {"status": "failed", "message": "Transaction not found. Please wait 1 minute and try again."}
+            
+        except Exception as e:
+            if "Way too much request weight" in str(e) or "-1003" in str(e):
+                return {"status": "failed", "message": "Binance server is busy. Please wait 1 minute and try again."}
+            return {"status": "error", "message": str(e)}
+
+    elif platform in ["bybit", "bybitaddress"]:
+        if not BYBIT_API_KEY or not BYBIT_SECRET_KEY:
+            return {"status": "error", "message": "Bybit API keys not set."}
+        try:
+            session = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_SECRET_KEY)
+            
+            internal_res = session.get_internal_deposit_records(limit=50)
+            if internal_res.get('retCode') == 0 and 'result' in internal_res and 'rows' in internal_res['result']:
+                for tx in internal_res['result']['rows']:
+                    if tx.get('txID') == trx_id:
+                        if tx.get('status') == 2:
+                            amount = float(tx.get('amount', 0))
+                            return {"status": "success", "amount": amount, "currency": tx.get('coin', 'USDT')}
+                        else:
+                            return {"status": "failed", "message": "Transaction is still Processing. Try again later."}
+            
+            deposit_res = session.get_deposit_records(limit=50)
+            if deposit_res.get('retCode') == 0 and 'result' in deposit_res and 'rows' in deposit_res['result']:
+                for tx in deposit_res['result']['rows']:
+                    if tx.get('txID') == trx_id:
+                        if tx.get('status') == 3:
+                            amount = float(tx.get('amount', 0))
+                            return {"status": "success", "amount": amount, "currency": tx.get('coin', 'USDT')}
+                        else:
+                            return {"status": "failed", "message": "Network Transaction is not confirmed yet."}
+                            
+            return {"status": "failed", "message": "Transaction not found on network."}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+@router.message(DepositState.waiting_for_crypto_trxid)
+async def process_crypto_trxid(message: Message, state: FSMContext):
+    trx_id = message.text.strip()
+    user_id = message.from_user.id
+    
+    data = await state.get_data()
+    method_key = data.get("method_key") 
+    platform_name = data.get("payment_method")
+    
+    processing_msg = await message.answer(f"⏳ <b>Communicating with Blockchain Server...</b>\nPlease wait a few seconds.", parse_mode="HTML")
+    
+    result = await asyncio.to_thread(verify_crypto_pay, trx_id, method_key)
+    
+    if result["status"] == "success":
+        amount_usd = result["amount"]
+        currency = result.get("currency", "USDT")
+        
         if db:
-            docs = db.collection('products').where('category', '==', cat).stream()
-            for doc in docs:
-                details = doc.to_dict()
-                keyboard.append([InlineKeyboardButton(text=f"{details.get('name')} | ${details.get('price')}", callback_data=f"editp|{doc.id}", style="primary")])
-                
-    keyboard.append([InlineKeyboardButton(text="◀️ Back to Categories", callback_data="admin_products", style="danger")])
-    await callback.message.edit_text(f"📦 <b>Manage: {cat.upper()}</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("admin_subcat|"))
-async def show_category_products_sub(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    parts = callback.data.split("|")
-    cat = parts[1]
-    subcat = parts[2]
-    
-    if not db: return
-    docs = db.collection('products').where('category', '==', cat).where('sub_category', '==', subcat).stream()
-    
-    keyboard = []
-    for doc in docs:
-        details = doc.to_dict()
-        keyboard.append([InlineKeyboardButton(text=f"{details.get('name', 'Unknown')} | ${details.get('price', 0.0)}", callback_data=f"editp|{doc.id}", style="primary")])
-        
-    keyboard.append([InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product", style="success")])
-    keyboard.append([InlineKeyboardButton(text="🗑️ Delete Sub-Category", callback_data=f"delsubcat|{cat}|{subcat}", style="danger")])
-    keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}", style="primary")])
-    
-    text = f"📦 <b>Manage Products</b>\n\nSelect a product to edit or delete:"
-    if len(keyboard) == 3: 
-        text = f"⚠️ <b>No products found here.</b>"
-        
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("delsubcat|"))
-async def process_delete_subcat(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    parts = callback.data.split("|")
-    cat = parts[1]
-    subcat = parts[2]
-    
-    await delete_subcategory(subcat)
-    await callback.answer("✅ Sub-Category deleted successfully!", show_alert=True)
-    
-    callback.data = f"admin_cat_{cat}"
-    await show_category_options(callback)
-
-# ==========================================
-# 🟢 EDIT PRODUCT MENU (Price & Stock)
-# ==========================================
-@router.callback_query(F.data.startswith("editp|"))
-async def edit_product_menu(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    prod_id = callback.data.split("|")[1]
-    product = await get_product(prod_id)
-    if not product: return await callback.answer("❌ Product not found!", show_alert=True)
-    
-    cat = product.get('category', 'vpn')
-    subcat = product.get('sub_category', 'none')
-    back_btn = f"admin_subcat|{cat}|{subcat}" if subcat and subcat != "none" else f"admin_cat_{cat}"
-    
-    stock_count = len(product.get('stock', []))
-    delivery_type = product.get('delivery_type', 'manual')
-    
-    text = (
-        f"📦 <b>Product Details</b>\n\n"
-        f"🔹 <b>Name:</b> {product.get('name')}\n"
-        f"📂 <b>Category:</b> {cat.upper()}\n"
-        f"💲 <b>Current Price:</b> ${product.get('price')}\n"
-        f"🚚 <b>Delivery Type:</b> {delivery_type.title()}\n"
-        f"🔑 <b>Keys in Stock:</b> {stock_count}"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
-        [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("updatep|"))
-async def start_update_product(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    action = callback.data.split("|")[1]
-    prod_id = callback.data.split("|")[2]
-    
-    product = await get_product(prod_id)
-    if not product: return await callback.answer("❌ Error loading product.")
-    
-    await state.update_data(product_id=prod_id, old_price=product.get('price'), prod_name=product.get('name'))
-    
-    if action == "price":
-        await state.set_state(EditProductState.waiting_for_price)
-        await callback.message.edit_text(f"💲 <b>Update Price for {product.get('name')}</b>\n\nCurrent Price: ${product.get('price')}\n\nEnter the new price below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
-    elif action == "stock":
-        await state.set_state(EditProductState.waiting_for_stock)
-        await callback.message.edit_text(f"➕ <b>Add Stock for {product.get('name')}</b>\n\nSend the Access Keys / Account Details below.\n<i>(Send each key in a new line for multiple keys)</i>:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
-
-@router.message(EditProductState.waiting_for_price)
-async def process_price_update(message: Message, state: FSMContext, bot: Bot):
-    if not is_admin(message.from_user.id): return
-    try: 
-        new_price = float(message.text)
-    except ValueError: 
-        return await message.answer("❌ Invalid price format. Try again.")
-    
-    data = await state.get_data()
-    prod_id = data['product_id']
-    old_price = data['old_price']
-    prod_name = data['prod_name']
-    
-    if db:
-        db.collection('products').document(prod_id).update({'price': new_price, 'updated_at': firestore.SERVER_TIMESTAMP})
-        
-    await state.clear()
-    await message.answer(f"✅ Price updated successfully to ${new_price}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
-    
-    # 📢 Price Update Alert in Channel
-    if MAIN_CHANNEL_ID and old_price != new_price:
-        trend = "📉 <b>PRICE DROP!</b>" if new_price < old_price else "📈 <b>PRICE UPDATE</b>"
-        channel_text = f"{trend}\n\n📦 <b>{prod_name}</b>\n❌ Old Price: ${old_price}\n✅ <b>New Price: ${new_price}</b>\n\nGet it now from our bot!"
-        buy_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=f"https://t.me/{BOT_USERNAME}?start=buy_{prod_id}")]])
-        try: 
-            await bot.send_message(MAIN_CHANNEL_ID, channel_text, reply_markup=buy_btn, parse_mode="HTML")
-        except: 
-            pass
-
-@router.message(EditProductState.waiting_for_stock)
-async def process_stock_update(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): return
-    keys = message.text.split("\n")
-    valid_keys = [k.strip() for k in keys if k.strip()]
-    
-    if not valid_keys: 
-        return await message.answer("❌ No valid keys found. Try again.")
-    
-    data = await state.get_data()
-    prod_id = data['product_id']
-    
-    if db:
-        # Get current stock
-        doc = db.collection('products').document(prod_id).get()
-        if doc.exists:
-            current_stock = doc.to_dict().get('stock', [])
-            current_stock.extend(valid_keys)
-            db.collection('products').document(prod_id).update({'stock': current_stock, 'delivery_type': 'auto', 'updated_at': firestore.SERVER_TIMESTAMP})
+            trx_ref = db.collection('used_trx').document(trx_id)
+            doc = trx_ref.get()
             
-    await state.clear()
-    await message.answer(f"✅ <b>{len(valid_keys)} Keys Added to Stock!</b>\nDelivery Type is now set to <b>Auto</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
-
-@router.callback_query(F.data.startswith("delp|"))
-async def process_delete_product(callback: CallbackQuery, bot: Bot):
-    if not is_admin(callback.from_user.id): return
-    prod_id = callback.data.split("|")[1]
-    
-    product = await get_product(prod_id)
-    cat = product.get('category', 'vpn') if product else 'vpn'
-    subcat = product.get('sub_category', 'none') if product else 'none'
-    prod_name = product.get('name', 'Product') if product else 'Product'
-    
-    await delete_product(prod_id)
-    
-    if MAIN_CHANNEL_ID:
-        try: 
-            await bot.send_message(MAIN_CHANNEL_ID, f"⚠️ <b>STOCK OUT NOTICE</b>\n\n🚫 <b>{prod_name}</b> is currently out of stock or removed from our shop. Stay tuned for updates!", parse_mode="HTML")
-        except: 
-            pass
-
-    await callback.answer("✅ Product deleted & Posted in channel!", show_alert=True)
-    
-    if subcat and subcat != "none":
-        callback.data = f"admin_subcat|{cat}|{subcat}"
-        await show_category_products_sub(callback)
-    else:
-        callback.data = f"admin_cat_{cat}"
-        await show_category_options(callback)
-
-# --- Add Sub Category ---
-@router.callback_query(F.data.startswith("add_subcat|"))
-async def add_subcat_start(callback: CallbackQuery, state: FSMContext):
-    cat = callback.data.split("|")[1]
-    await state.update_data(category=cat)
-    await state.set_state(AddSubCatState.name)
-    await callback.message.edit_text(f"📝 Enter name for new <b>{cat.upper()}</b> sub-category (e.g., 7 Days Validity):", parse_mode="HTML")
-
-@router.message(AddSubCatState.name)
-async def save_subcat(message: Message, state: FSMContext):
-    data = await state.get_data()
-    cat = data['category']
-    await add_subcategory(cat, message.text)
-    await state.clear()
-    await message.answer(f"✅ Sub-category added to {cat.upper()}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}", style="primary")]]))
-
-# ==========================================
-# 🆕 Add Product
-# ==========================================
-@router.callback_query(F.data == "add_new_product")
-async def add_product_category(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 VPN", callback_data="setcat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="setcat_proxy", style="primary")],
-        [InlineKeyboardButton(text="🎟️ Premium", callback_data="setcat_sub", style="primary"), InlineKeyboardButton(text="🤖 AI Service", callback_data="setcat_ai", style="primary")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_products", style="danger")]
-    ])
-    await callback.message.edit_text("📂 <b>Select a Category for the new product:</b>", reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("setcat_"))
-async def add_product_subcat(callback: CallbackQuery, state: FSMContext):
-    cat = callback.data.split("_")[1]
-    await state.update_data(prod_category=cat)
-    
-    if cat in ['vpn', 'proxy']:
-        subcats = await get_subcategories(cat)
-        if not subcats:
-            return await callback.answer("⚠️ Create a sub-category first!", show_alert=True)
-        keyboard = [[InlineKeyboardButton(text=sc['name'], callback_data=f"setsubcat|{sc['subcat_id']}", style="primary")] for sc in subcats]
-        await callback.message.edit_text("📂 Select Sub-Category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    else:
-        await state.update_data(prod_subcat="none")
-        await state.set_state(AddProductState.name)
-        await callback.message.edit_text("📝 <b>Enter Product Name:</b>", parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("setsubcat|"))
-async def add_product_name_sub(callback: CallbackQuery, state: FSMContext):
-    subcat_id = callback.data.split("|")[1]
-    await state.update_data(prod_subcat=subcat_id)
-    await state.set_state(AddProductState.name)
-    await callback.message.edit_text("📝 <b>Enter Product Name:</b>", parse_mode="HTML")
-
-@router.message(AddProductState.name)
-async def add_product_price(message: Message, state: FSMContext):
-    await state.update_data(prod_name=message.text)
-    await state.set_state(AddProductState.price)
-    await message.answer("💲 <b>Enter Product Price ($):</b>\n(e.g., 2.50)", parse_mode="HTML")
-
-@router.message(AddProductState.price)
-async def save_new_product(message: Message, state: FSMContext, bot: Bot):
-    try: 
-        price = float(message.text)
-    except ValueError: 
-        return await message.answer("❌ Invalid price format.")
-    
-    data = await state.get_data()
-    new_prod_id = f"p{int(time.time() * 1000) % 100000}" 
-    
-    if db:
-        db.collection('products').document(new_prod_id).set({
-            'product_id': new_prod_id, 'category': data['prod_category'], 'sub_category': data['prod_subcat'],
-            'name': data['prod_name'], 'price': price, 'delivery_type': 'manual', 'stock': [],
-            'updated_at': firestore.SERVER_TIMESTAMP
-        })
-        
-    if MAIN_CHANNEL_ID:
-        try:
-            channel_text = f"🌟 <b>NEW PRODUCT ADDED!</b> 🌟\n\n📦 <b>{data['prod_name']}</b>\n💲 <b>Price:</b> ${price}\n\nAvailable now in our bot!"
-            buy_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=f"https://t.me/{BOT_USERNAME}?start=buy_{new_prod_id}")]])
-            await bot.send_message(MAIN_CHANNEL_ID, channel_text, reply_markup=buy_btn, parse_mode="HTML")
-        except: 
-            pass
-        
-    await state.set_state(AddProductState.name)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏹️ Stop Adding (Dashboard)", callback_data="back_to_admin", style="danger")]])
-    await message.answer(
-        f"✅ <b>Product Added!</b>\n📦 {data['prod_name']} - ${price}\n\n"
-        "📝 <b>Enter NEXT Product Name:</b>\n<i>(Or click Stop to return to dashboard)</i>", 
-        reply_markup=keyboard, parse_mode="HTML"
-    )
-
-# ==========================================
-# 👥 Users Management
-# ==========================================
-@router.callback_query(F.data == "admin_users")
-async def manage_users_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    if not is_admin(callback.from_user.id): return
-    users_count = len(list(db.collection('users').stream())) if db else 0
-    text = f"👥 <b>User Management</b>\n\n📊 <b>Total Registered Users:</b> {users_count}\n\nClick below to search for a user."
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Search & Edit User", callback_data="search_user", style="primary")],
-        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data == "search_user")
-async def search_user_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    await state.set_state(UserManageState.waiting_for_user_id)
-    await callback.message.edit_text("🔍 <b>Enter User ID:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_users", style="danger")]]), parse_mode="HTML")
-
-@router.message(UserManageState.waiting_for_user_id)
-async def search_user_result(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): return
-    if not message.text.isdigit(): return await message.answer("❌ Invalid ID.")
-    target_uid = message.text
-    if not db: return
-    doc = db.collection('users').document(target_uid).get()
-    if not doc.exists: return await message.answer("❌ User not found.")
-        
-    user_info = doc.to_dict()
-    await state.update_data(target_user=target_uid)
-    username = user_info.get('username')
-    user_display = f"@{username}" if username else "No Username"
-    
-    text = (
-        f"👤 <b>User Details</b>\n\n🆔 <b>ID:</b> <code>{target_uid}</code>\n"
-        f"📛 <b>Name:</b> {user_info.get('first_name', 'Unknown')}\n"
-        f"🔗 <b>Username:</b> {user_display}\n"
-        f"💰 <b>Balance:</b> ${user_info.get('balance', 0.0):.2f}\n"
-        f"💸 <b>Spent:</b> ${user_info.get('total_spent', 0.0):.2f}"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Add Balance", callback_data=f"addbal_{target_uid}", style="success"), InlineKeyboardButton(text="➖ Deduct Balance", callback_data=f"dedbal_{target_uid}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Back", callback_data="search_user", style="primary")]
-    ])
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("addbal_") | F.data.startswith("dedbal_"))
-async def ask_balance_amount(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    action, target_uid = callback.data.split("_")
-    await state.update_data(action_type=action, target_user=target_uid)
-    await state.set_state(UserManageState.waiting_for_amount)
-    action_text = "ADD to" if action == "addbal" else "DEDUCT from"
-    await callback.message.edit_text(f"💲 <b>Enter Amount to {action_text} User <code>{target_uid}</code>:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_users", style="danger")]]), parse_mode="HTML")
-
-@router.message(UserManageState.waiting_for_amount)
-async def process_balance_change(message: Message, state: FSMContext, bot: Bot):
-    if not is_admin(message.from_user.id): return
-    try: 
-        amount = float(message.text)
-    except ValueError: 
-        return await message.answer("❌ Invalid amount.")
-        
-    data = await state.get_data()
-    target_uid = data['target_user']
-    action = data['action_type']
-    if not db: return
-    user_ref = db.collection('users').document(str(target_uid))
-    
-    if action == "addbal":
-        user_ref.update({'balance': firestore.Increment(amount)})
-        try: 
-            await bot.send_message(target_uid, f"🎁 <b>Balance Added!</b>\nAdmin added <b>${amount}</b> to your wallet.", parse_mode="HTML")
-        except: 
-            pass
-    else:
-        user_ref.update({'balance': firestore.Increment(-amount)})
-        try: 
-            await bot.send_message(target_uid, f"⚠️ <b>Balance Deducted</b>\nAdmin deducted <b>${amount}</b> from your wallet.", parse_mode="HTML")
-        except: 
-            pass
-        
-    await state.clear()
-    updated_doc = user_ref.get()
-    new_balance = updated_doc.to_dict().get('balance', 0.0) if updated_doc.exists else 0.0
-    await message.answer(f"✅ <b>Success!</b>\n\n👤 <b>User:</b> <code>{target_uid}</code>\n💰 <b>New Balance:</b> ${new_balance:.2f}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
-
-# ==========================================
-# 📢 Broadcast Message
-# ==========================================
-@router.callback_query(F.data == "admin_broadcast")
-async def broadcast_start(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id): return
-    await state.set_state(BroadcastState.waiting_for_message)
-    await callback.message.edit_text("📢 <b>Broadcast Message</b>\n\nSend the message, photo, or video you want to broadcast.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin", style="danger")]]), parse_mode="HTML")
-
-@router.message(BroadcastState.waiting_for_message)
-async def receive_broadcast_message(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id): return
-    await state.update_data(msg_id=message.message_id, from_chat_id=message.chat.id)
-    keyboard = []
-    if db:
-        for doc in db.collection('products').stream():
-            details = doc.to_dict()
-            keyboard.append([InlineKeyboardButton(text=f"🔗 Attach: {details['name']}", callback_data=f"bc_btn|{doc.id}", style="primary")])
+            if doc.exists:
+                await processing_msg.edit_text("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
+                return
             
-    keyboard.append([InlineKeyboardButton(text="⏭️ Send Without Button", callback_data="bc_btn|none", style="primary")])
-    keyboard.append([InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin", style="danger")])
-    await state.set_state(BroadcastState.waiting_for_button)
-    await message.answer("🛒 <b>Attach a Product Button?</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+            trx_ref.set({'user_id': user_id, 'amount': amount_usd, 'currency': currency, 'platform': method_key, 'timestamp': firestore.SERVER_TIMESTAMP})
+            await save_deposit_history(user_id=user_id, amount=amount_usd, method=platform_name, trx_id=trx_id, currency=currency)
+            db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
+        
+        success_text = (
+            f"🎉 <b>{platform_name} Verified!</b>\n\n"
+            f"🧾 <b>TrxID:</b> <code>{trx_id}</code>\n"
+            f"💰 <b>Amount:</b> {amount_usd} {currency}\n\n"
+            f"<i>Your balance has been updated automatically.</i>"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Go to Shop", callback_data="menu_buy", style="success", icon_custom_emoji_id=EMOJI_CART)]])
+        await processing_msg.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
+        await state.clear()
+        
+    else:
+        error_msg = result.get('message', 'Transaction not found.')
+        fail_text = f"❌ <b>Verification Failed!</b>\n\n⚠️ {error_msg}\n\nPlease check your TrxID and try again."
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Try Again", callback_data="menu_wallet", style="danger")]])
+        await processing_msg.edit_text(fail_text, reply_markup=keyboard, parse_mode="HTML")
+        await state.clear()
 
-@router.callback_query(BroadcastState.waiting_for_button, F.data.startswith("bc_btn|"))
-async def process_broadcast_send(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    if not is_admin(callback.from_user.id): return
-    prod_id = callback.data.split("|")[1]
+# ==========================================
+# 📱 LOCAL PAYMENT FLOW
+# ==========================================
+@router.message(DepositState.waiting_for_amount)
+async def receive_amount(message: Message, state: FSMContext):
+    if not message.text.replace('.', '', 1).isdigit():
+        return await message.answer("⚠️ Please enter a valid number:")
+        
+    amount = float(message.text)
+    
+    if amount < 20:
+        return await message.answer("⚠️ <b>Minimum deposit amount is 20 BDT.</b>\n\nPlease enter an amount of 20 or more:", parse_mode="HTML")
+        
+    await state.update_data(deposit_amount=amount)
+    await state.set_state(DepositState.waiting_for_sender) 
+    
+    data = await state.get_data()
+    method_name = data.get("payment_method", "Payment")
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
+    await message.answer(f"📱 <b>Which account will you Send from?</b>\n<i>(Type your 11-digit {method_name} number below)</i>", reply_markup=keyboard, parse_mode="HTML")
+
+@router.message(DepositState.waiting_for_sender)
+async def receive_sender(message: Message, state: FSMContext):
+    sender_num = message.text.strip()
+    
+    if not sender_num.isdigit() or len(sender_num) != 11:
+        return await message.answer("⚠️ <b>Invalid Number!</b>\n\nPlease enter exactly 11 digits for your sender number (e.g., 01712345678):", parse_mode="HTML")
+        
+    await state.update_data(sender_number=sender_num)
+    await state.set_state(DepositState.waiting_for_trxid) 
+    
+    data = await state.get_data()
+    amount = data.get("deposit_amount")
+    method_name = data.get("payment_method", "Payment")
+    method_key = data.get("method_key", "bkash")
+    
+    methods = await get_all_payment_methods()
+    admin_receiving_number = methods.get(method_key, {}).get("number", "Unknown")
+    currency = "BDT"
+    
+    instruction = (
+        "📱 <b>Payment Instructions</b>\n\n"
+        f"🔹 <b>Method:</b> {method_name}\n"
+        f"🔹 <b>Amount to send:</b> {amount} {currency}\n"
+        f"🔹 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n"
+        "⚠️ <i>After sending, type your <b>Transaction ID (TrxID)</b> below:</i>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
+    await message.answer(instruction, reply_markup=keyboard, parse_mode="HTML")
+
+@router.message(DepositState.waiting_for_trxid)
+async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
+    trxid = message.text.strip()
+    user_id = message.from_user.id
+    
+    if db:
+        existing_deposits = db.collection('pending_deposits').where('trx_id', '==', trxid).limit(1).stream()
+        for _ in existing_deposits:
+            await message.answer("❌ <b>Alert:</b> This Transaction ID has already been submitted in our system!\n\n<i>If you think this is a mistake, please contact support.</i>", parse_mode="HTML")
+            return 
+            
+        used_trx_doc = db.collection('used_trx').document(trxid).get()
+        if used_trx_doc.exists:
+            await message.answer("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
+            return
+
     user_data = await state.get_data()
-    msg_id = user_data['msg_id']
-    from_chat_id = user_data['from_chat_id']
     
-    reply_markup = None
-    if prod_id != "none" and db:
-        product = db.collection('products').document(prod_id).get().to_dict()
-        if product:
-            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🛒 {product['name']} - ${product['price']}", callback_data=f"bcbuy_{prod_id}", style="primary")]])
-            
+    method_name = user_data.get("payment_method")
+    amount = user_data.get("deposit_amount", 0) 
+    sender_number = user_data.get("sender_number", "Unknown")
+    currency = "BDT"
+    
     await state.clear()
-    await callback.message.edit_text("⏳ <b>Broadcasting...</b>\nPlease wait.")
-    users = [doc.id for doc in db.collection('users').stream()] if db else [str(callback.from_user.id)]
-    success_count = 0
-    for uid in users:
+    
+    deposit_id = await create_pending_deposit(
+        user_id=user_id, amount=amount, method=method_name, sender_number=sender_number, trx_id=trxid
+    )
+
+    admin_text = (
+        "💰 <b>NEW DEPOSIT REQUEST!</b>\n\n"
+        f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"🏦 <b>Method:</b> {method_name}\n"
+        f"📱 <b>Sender:</b> <code>{sender_number}</code>\n"
+        f"💵 <b>Amount:</b> {amount} {currency}\n"
+        f"🧾 <b>TrxID:</b> <code>{trxid}</code>"
+    )
+    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Verify Now", callback_data=f"viewdep_{deposit_id}", style="success", icon_custom_emoji_id=EMOJI_DONE)]
+    ])
+    
+    for admin_id in ADMIN_IDS:
         try:
-            await bot.copy_message(chat_id=int(uid), from_chat_id=from_chat_id, message_id=msg_id, reply_markup=reply_markup)
-            success_count += 1
-        except Exception: 
-            pass 
-            
-    await callback.message.edit_text(f"✅ <b>Broadcast Complete!</b>\n\nMessage sent to <b>{success_count}</b> users.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Dashboard", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
+            await bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
+        except Exception:
+            pass
+
+    pending_text = (
+        "⏳ <b>Deposit Request Submitted!</b>\n\n"
+        f"🏦 <b>Method:</b> {method_name}\n"
+        f"💵 <b>Amount:</b> {amount} {currency}\n"
+        f"🧾 <b>TrxID:</b> <code>{trxid}</code>\n\n"
+        "👨‍💻 <i>Your transaction has been securely sent to the admin. Your account will be updated once approved.</i>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Main Menu", callback_data="back_to_main", style="primary")]])
+    await message.answer(pending_text, reply_markup=keyboard, parse_mode="HTML")
