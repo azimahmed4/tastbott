@@ -3,7 +3,7 @@
 # Purpose: ডিরেক্ট ডিপোজিট সিস্টেম (Binance/Bybit API Auto Verify এবং Local Payment)
 # ==========================================
 import os
-import time  # 🚀 ক্যাশ সিস্টেমের জন্য যুক্ত করা হলো
+import time  
 import asyncio
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -157,37 +157,72 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
             f"📱 <b>{method_name} (Manual Verification)</b>\n\n"
             "🔹 <b>Minimum Deposit:</b> 20 BDT\n\n"
             "⚠️ <b>How much money do you want to deposit?</b>\n"
-            "<i>(Type the amount in BDT below. Example: 20)</i>"
+            "<i>(Type the amount in BDT below. Example: 100)</i>"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
         await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# ⚡ CRYPTO API VERIFICATION LOGIC (WITH ANTI-BAN CACHE)
+# ⚡ CRYPTO API VERIFICATION LOGIC (WITH FIRESTORE GLOBAL LOCK)
 # ==========================================
-BINANCE_CACHE = {
-    "data": [],
-    "last_update": 0
-}
-
 def verify_crypto_pay(trx_id: str, platform: str):
-    global BINANCE_CACHE
-    
     if platform == "binance":
         if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
             return {"status": "error", "message": "Binance API keys not set."}
         try:
+            # 🚀 NEW: Firestore Database Global Cache & Lock
+            cache_ref = db.collection('settings').document('binance_cache')
+            cache_doc = cache_ref.get()
+            
             current_time = time.time()
+            needs_update = True
+            cached_data = []
             
-            if current_time - BINANCE_CACHE["last_update"] > 60:
-                client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
-                history = client.get_pay_trade_history(limit=100)
+            if cache_doc.exists:
+                c_data = cache_doc.to_dict()
+                last_update = c_data.get('last_update', 0)
+                is_locked = c_data.get('is_locked', False)
+                cached_data = c_data.get('data', [])
                 
-                if history.get('code') == '000000' and 'data' in history:
-                    BINANCE_CACHE["data"] = history['data']
-                    BINANCE_CACHE["last_update"] = current_time
-            
-            for tx in BINANCE_CACHE["data"]:
+                # যদি গত ৬০ সেকেন্ডের মধ্যে আপডেট হয়ে থাকে, তবে নতুন করে API কল করবে না
+                if current_time - last_update < 60:
+                    needs_update = False
+                # যদি অন্য কোনো ইউজার ঠিক এই মুহূর্তে কল করে থাকে (Lock = True)
+                elif is_locked and current_time - last_update < 120:
+                    needs_update = False
+
+            if needs_update:
+                # 🔒 ডাটাবেস লক করা হলো যাতে অন্য প্রসেস API কল না করে
+                cache_ref.set({
+                    'is_locked': True, 
+                    'last_update': current_time, 
+                    'data': cached_data
+                }, merge=True)
+                
+                try:
+                    client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+                    history = client.get_pay_trade_history(limit=100)
+                    
+                    if history.get('code') == '000000' and 'data' in history:
+                        cached_data = history['data']
+                    
+                    # 🔓 ডেটা সেভ করে লক খুলে দেওয়া হলো
+                    cache_ref.set({
+                        'is_locked': False, 
+                        'last_update': time.time(), 
+                        'data': cached_data
+                    })
+                except Exception as e:
+                    # যদি API কল ফেইল করে, তবুও যেন লক খুলে যায়
+                    cache_ref.set({
+                        'is_locked': False, 
+                        'last_update': time.time(), 
+                        'data': cached_data
+                    })
+                    raise e
+
+            # ডাটাবেসের সেভ করা ডেটা থেকে ট্রানজেকশন খুঁজবে
+            for tx in cached_data:
                 if tx.get('orderId') == trx_id or tx.get('transactionId') == trx_id:
                     if tx.get('fundsDetail'):
                         amount = sum([float(f['amount']) for f in tx['fundsDetail']])
@@ -195,11 +230,11 @@ def verify_crypto_pay(trx_id: str, platform: str):
                         amount = float(tx.get('amount', 0))
                     return {"status": "success", "amount": amount, "currency": tx.get('currency', 'USDT')}
             
-            return {"status": "failed", "message": "Transaction not found. Please wait 1 minute and try again."}
+            return {"status": "failed", "message": "Transaction not found. Please wait 1-2 minutes and try again."}
             
         except Exception as e:
             if "Way too much request weight" in str(e) or "-1003" in str(e):
-                return {"status": "failed", "message": "Binance server is busy. Please wait 1 minute and try again."}
+                return {"status": "failed", "message": "Binance server is currently busy. Please wait 1-2 minutes and try again."}
             return {"status": "error", "message": str(e)}
 
     elif platform in ["bybit", "bybitaddress"]:
@@ -288,7 +323,6 @@ async def receive_amount(message: Message, state: FSMContext):
         
     amount = float(message.text)
     
-    # 🟢 NEW: Minimum 20 BDT Validation
     if amount < 20:
         return await message.answer("⚠️ <b>Minimum deposit amount is 20 BDT.</b>\n\nPlease enter an amount of 20 or more:", parse_mode="HTML")
         
@@ -305,9 +339,8 @@ async def receive_amount(message: Message, state: FSMContext):
 async def receive_sender(message: Message, state: FSMContext):
     sender_num = message.text.strip()
     
-    # 🟢 NEW: Exactly 11 Digits Validation for Phone Number
     if not sender_num.isdigit() or len(sender_num) != 11:
-        return await message.answer("⚠️ <b>Invalid Number!</b>\n\nPlease enter exactly 11 digits for your sender number (e.g., 01308618044):", parse_mode="HTML")
+        return await message.answer("⚠️ <b>Invalid Number!</b>\n\nPlease enter exactly 11 digits for your sender number (e.g., 01311111111):", parse_mode="HTML")
         
     await state.update_data(sender_number=sender_num)
     await state.set_state(DepositState.waiting_for_trxid) 
@@ -317,7 +350,6 @@ async def receive_sender(message: Message, state: FSMContext):
     method_name = data.get("payment_method", "Payment")
     method_key = data.get("method_key", "bkash")
     
-    # ডাটাবেস থেকে নাম্বার নিয়ে আসা
     methods = await get_all_payment_methods()
     admin_receiving_number = methods.get(method_key, {}).get("number", "Unknown")
     currency = "BDT"
