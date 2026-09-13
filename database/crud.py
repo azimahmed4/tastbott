@@ -1,3 +1,6 @@
+# ==========================================
+# File: database/crud.py
+# ==========================================
 import os
 import json
 import random
@@ -41,6 +44,46 @@ async def get_bot_status():
     if doc.exists:
         return doc.to_dict().get('maintenance', False)
     return False
+
+# ==========================================
+# 🟢 NEW: Dynamic Payment Settings
+# ==========================================
+async def initialize_payment_methods():
+    """ডিফল্ট পেমেন্ট মেথডগুলো ডাটাবেসে সেট করবে (যদি না থাকে)"""
+    if not db: return False
+    
+    defaults = {
+        "binance": {"name": "Binance Pay", "type": "crypto", "pay_id": "1126025983", "is_active": True},
+        "bybit": {"name": "Bybit Internal", "type": "crypto", "pay_id": "127145762", "is_active": True},
+        "bybitaddress": {"name": "USDT (BEP20)", "type": "crypto", "address": "0x822ee632c8223cb5b0457e6a8a36221bbe52a87c", "is_active": True},
+        "bkash": {"name": "bKash", "type": "local", "number": "01308618044", "is_active": True},
+        "nagad": {"name": "Nagad", "type": "local", "number": "01308618044", "is_active": True},
+        "rocket": {"name": "Rocket", "type": "local", "number": "01308618044", "is_active": True}
+    }
+    
+    doc = db.collection('settings').document('payment_methods').get()
+    if not doc.exists:
+        db.collection('settings').document('payment_methods').set(defaults)
+        return defaults
+    return doc.to_dict()
+
+async def get_all_payment_methods():
+    """ডাটাবেস থেকে সব পেমেন্ট মেথডের লাইভ ডাটা আনবে"""
+    if not db: return {}
+    doc = db.collection('settings').document('payment_methods').get()
+    if doc.exists:
+        return doc.to_dict()
+    # যদি ডাটাবেসে কিছুই না থাকে, তবে ডিফল্টগুলো ক্রিয়েট করে নেবে
+    return await initialize_payment_methods()
+
+async def update_payment_method(method_key: str, data: dict):
+    """অ্যাডমিন প্যানেল থেকে কোনো মেথড আপডেট বা ON/OFF করার জন্য"""
+    if not db: return False
+    # পুরো ডকুমেন্ট আপডেট না করে শুধু নির্দিষ্ট key-এর ডাটা আপডেট করা
+    db.collection('settings').document('payment_methods').update({
+        method_key: data
+    })
+    return True
 
 # ==========================================
 # Database Functions - Users
@@ -101,7 +144,7 @@ async def delete_subcategory(subcat_id: str):
 # ==========================================
 async def add_or_update_product(product_id: str, category: str, sub_category: str, name: str, price: float, delivery_type: str = "manual", stock: list = None):
     """
-    🟢 UPDATED: Auto/Manual Delivery এবং Stock সংরক্ষণের অপশন যোগ করা হয়েছে
+    🟢 UPDATED: Auto/Manual Delivery এবং Stock সংরক্ষণের অপশন যোগ করা হয়েছে
     """
     if not db: return False
     product_ref = db.collection('products').document(product_id)
