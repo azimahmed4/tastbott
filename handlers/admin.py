@@ -4,7 +4,7 @@
 # ==========================================
 import time
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dt_time
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -13,9 +13,11 @@ from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
 
 from config import ADMIN_IDS, MAIN_CHANNEL_ID, BOT_USERNAME
+# 🟢 NEW: get_all_payment_methods, update_payment_method ইমপোর্ট করা হলো
 from database.crud import (db, get_product, delete_product, add_subcategory, get_subcategories, 
                            delete_subcategory, get_products_by_category, save_deposit_history, 
-                           get_deposit_statement, set_bot_status, get_bot_status)
+                           get_deposit_statement, set_bot_status, get_bot_status,
+                           get_all_payment_methods, update_payment_method)
 
 router = Router()
 
@@ -53,10 +55,14 @@ async def get_admin_menu():
         ],
         [
             InlineKeyboardButton(text="📅 Today's Deposits", callback_data="admin_today_deposits", style="primary"),
-            # 🟢 NEW: Recent Orders Button
-            InlineKeyboardButton(text="📦 Recent Orders (24h)", callback_data="admin_recent_orders", style="primary")
+            # 🟢 UPDATED: Recent Orders -> Today's Orders (Midnight Reset)
+            InlineKeyboardButton(text="📦 Today's Orders", callback_data="admin_recent_orders", style="primary")
         ],
-        [InlineKeyboardButton(text="📊 Total Deposit Report", callback_data="admin_report", style="primary")],
+        # 🟢 NEW: Payment Settings Button
+        [
+            InlineKeyboardButton(text="⚙️ Payment Settings", callback_data="admin_payment_settings", style="primary", icon_custom_emoji_id=EMOJI_SETTINGS),
+            InlineKeyboardButton(text="📊 Total Deposit Report", callback_data="admin_report", style="primary")
+        ],
         [InlineKeyboardButton(text=m_text, callback_data="toggle_maintenance", style=m_style)],
         [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin", style="danger")]
     ])
@@ -98,6 +104,13 @@ class UserManageState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
     waiting_for_button = State()
+
+# 🟢 NEW: Payment Settings Edit State
+class PaymentSettingState(StatesGroup):
+    waiting_for_new_value = State()
+    method_key = State()
+    method_data = State()
+    edit_type = State() # 'number' or 'pay_id'
 
 @router.message(Command("admin"))
 async def show_admin_panel(message: Message, state: FSMContext):
@@ -165,6 +178,139 @@ async def broadcast_live_status(bot: Bot):
             pass
 
 # ==========================================
+# ⚙️ PAYMENT SETTINGS PANEL (ON/OFF & Edit)
+# ==========================================
+@router.callback_query(F.data == "admin_payment_settings")
+async def show_payment_settings(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    
+    methods = await get_all_payment_methods()
+    keyboard = []
+    
+    for key, data in methods.items():
+        status_emoji = "✅" if data.get('is_active', True) else "❌"
+        # Edit Data: pay_id or address or number
+        if data.get('type') == 'local':
+            display_val = data.get('number', 'N/A')
+        else:
+            display_val = data.get('pay_id') or data.get('address') or 'N/A'
+            # যদি অ্যাড্রেস অনেক বড় হয়, একটু ছোট করে দেখানো
+            if len(display_val) > 15:
+                display_val = display_val[:6] + "..." + display_val[-4:]
+                
+        # Main Method Button (for viewing details/editing)
+        btn_text = f"{status_emoji} {data['name']} | {display_val}"
+        keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"payset_edit|{key}", style="primary")])
+        
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
+    
+    text = "⚙️ <b>Payment Settings</b>\n\nClick on a payment method to turn it ON/OFF or edit its details."
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("payset_edit|"))
+async def edit_single_payment_setting(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    key = callback.data.split("|")[1]
+    
+    methods = await get_all_payment_methods()
+    data = methods.get(key)
+    
+    if not data:
+        return await callback.answer("❌ Error loading payment method.", show_alert=True)
+        
+    status = "ON (Active)" if data.get('is_active', True) else "OFF (Disabled)"
+    toggle_text = "🔴 Turn OFF" if data.get('is_active', True) else "🟢 Turn ON"
+    toggle_style = "danger" if data.get('is_active', True) else "success"
+    
+    keyboard_layout = []
+    keyboard_layout.append([InlineKeyboardButton(text=toggle_text, callback_data=f"payset_toggle|{key}", style=toggle_style)])
+    
+    # 🟢 UPDATED: শুধুমাত্র লোকাল পেমেন্টের ক্ষেত্রে এডিট বাটন দেখাবে, ক্রিপ্টোর ক্ষেত্রে শুধু ON/OFF 
+    if data.get('type') == 'local':
+        val_label = "Number"
+        current_val = data.get('number', 'N/A')
+        keyboard_layout.append([InlineKeyboardButton(text=f"✏️ Edit {val_label}", callback_data=f"payset_changeval|{key}", style="primary")])
+    else:
+        val_label = "Address/Pay ID"
+        current_val = data.get('pay_id') or data.get('address') or 'N/A'
+        
+    keyboard_layout.append([InlineKeyboardButton(text="◀️ Back to Settings", callback_data="admin_payment_settings", style="primary")])
+    
+    text = (
+        f"⚙️ <b>Edit Payment Method:</b> {data['name']}\n\n"
+        f"🔹 <b>Status:</b> {status}\n"
+        f"🔹 <b>Current {val_label}:</b> <code>{current_val}</code>\n\n"
+    )
+    
+    if data.get('type') == 'crypto':
+        text += "⚠️ <i>Crypto IDs/Addresses cannot be edited for security reasons. You can only turn them ON or OFF.</i>"
+    else:
+        text += "What do you want to do?"
+        
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_layout), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("payset_toggle|"))
+async def toggle_payment_status(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    key = callback.data.split("|")[1]
+    
+    methods = await get_all_payment_methods()
+    data = methods.get(key)
+    
+    if data:
+        # স্ট্যাটাস উল্টে দেওয়া
+        data['is_active'] = not data.get('is_active', True)
+        await update_payment_method(key, data)
+        await callback.answer(f"✅ Status changed for {data['name']}!")
+        
+        # প্যানেল রিফ্রেশ করা
+        callback.data = f"payset_edit|{key}"
+        await edit_single_payment_setting(callback)
+
+@router.callback_query(F.data.startswith("payset_changeval|"))
+async def prompt_payment_value_change(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
+    key = callback.data.split("|")[1]
+    
+    methods = await get_all_payment_methods()
+    data = methods.get(key)
+    if not data: return
+    
+    # যেহেতু এখন শুধু লোকাল পেমেন্ট এডিট করা যাবে
+    if data.get('type') == 'local':
+        val_label = "Number"
+        edit_type = "number"
+    else:
+        return await callback.answer("❌ This method cannot be edited.", show_alert=True)
+        
+    await state.update_data(method_key=key, method_data=data, edit_type=edit_type)
+    await state.set_state(PaymentSettingState.waiting_for_new_value)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"payset_edit|{key}", style="danger")]])
+    await callback.message.edit_text(f"✏️ <b>Enter the new {val_label} for {data['name']}:</b>", reply_markup=keyboard, parse_mode="HTML")
+
+@router.message(PaymentSettingState.waiting_for_new_value)
+async def save_new_payment_value(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    new_value = message.text.strip()
+    
+    user_data = await state.get_data()
+    key = user_data['method_key']
+    data = user_data['method_data']
+    edit_type = user_data['edit_type']
+    
+    # Update dictionary
+    data[edit_type] = new_value
+    
+    # Save to database
+    await update_payment_method(key, data)
+    await state.clear()
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Settings", callback_data="admin_payment_settings", style="primary")]])
+    await message.answer(f"✅ Successfully updated {data['name']} {edit_type.replace('_', ' ').title()} to: <code>{new_value}</code>", reply_markup=keyboard, parse_mode="HTML")
+
+
+# ==========================================
 # 🟢 DEPOSIT STATEMENT PANEL
 # ==========================================
 @router.callback_query(F.data == "admin_report")
@@ -195,7 +341,7 @@ async def show_deposit_report(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🟢 NEW: Today's 24h Transactions
+# 🟢 NEW: Today's Deposits (Midnight Reset Logic)
 @router.callback_query(F.data == "admin_today_deposits")
 async def show_today_deposits(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -203,8 +349,13 @@ async def show_today_deposits(callback: CallbackQuery):
     
     await callback.answer("Loading today's transactions...")
     
-    time_24h_ago = datetime.now(timezone.utc) - timedelta(hours=24)
-    docs = db.collection('deposit_history').where('timestamp', '>=', time_24h_ago).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
+    # বাংলাদেশ সময় (UTC+6) অনুযায়ী আজকের রাত ১২:০০ টা (Midnight) বের করা
+    bdt_tz = timezone(timedelta(hours=6))
+    now_bdt = datetime.now(bdt_tz)
+    today_midnight_bdt = datetime.combine(now_bdt.date(), dt_time.min).replace(tzinfo=bdt_tz)
+    
+    # ফায়ারবেস থেকে রাত ১২টার পর থেকে এখন পর্যন্ত হওয়া ডেটা আনা
+    docs = db.collection('deposit_history').where('timestamp', '>=', today_midnight_bdt).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
     
     method_counts = {}
     trx_list = []
@@ -230,9 +381,9 @@ async def show_today_deposits(callback: CallbackQuery):
         trx_list.append(f"▪️ <b>{method}:</b> <code>{trx_id}</code> ({amount} {currency})")
     
     if not trx_list:
-        text = "📅 <b>Today's Transactions (Last 24h)</b>\n\n⚠️ No approved transactions found in the last 24 hours."
+        text = "📅 <b>Today's Transactions</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n⚠️ No approved transactions found for today."
     else:
-        text = "📅 <b>Today's Transactions (Last 24h)</b>\n\n"
+        text = "📅 <b>Today's Transactions</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n"
         text += "📊 <b>Summary (Pieces):</b>\n"
         for m, count in method_counts.items():
             text += f"🔹 {m}: {count} pcs\n"
@@ -250,16 +401,20 @@ async def show_today_deposits(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🟢 NEW: Recent Orders (Last 24h)
+# 🟢 NEW: Today's Orders (Midnight Reset Logic)
 @router.callback_query(F.data == "admin_recent_orders")
 async def show_recent_orders(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
     if not db: return await callback.answer("Database Error", show_alert=True)
     
-    await callback.answer("Loading recent orders...")
+    await callback.answer("Loading today's orders...")
     
-    time_24h_ago = datetime.now(timezone.utc) - timedelta(hours=24)
-    docs = db.collection('orders').where('timestamp', '>=', time_24h_ago).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
+    # বাংলাদেশ সময় অনুযায়ী রাত ১২টার (Midnight) হিসাব
+    bdt_tz = timezone(timedelta(hours=6))
+    now_bdt = datetime.now(bdt_tz)
+    today_midnight_bdt = datetime.combine(now_bdt.date(), dt_time.min).replace(tzinfo=bdt_tz)
+    
+    docs = db.collection('orders').where('timestamp', '>=', today_midnight_bdt).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
     
     total_sales = 0.0
     total_items = 0
@@ -277,9 +432,9 @@ async def show_recent_orders(callback: CallbackQuery):
         orders_list.append(f"📦 <b>{prod_name}</b> (x{qty}) - ${price}")
         
     if not orders_list:
-        text = "📦 <b>Recent Orders (Last 24h)</b>\n\n⚠️ No orders have been completed in the last 24 hours."
+        text = "📦 <b>Today's Orders</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n⚠️ No orders have been completed today."
     else:
-        text = "📦 <b>Recent Orders (Last 24h)</b>\n\n"
+        text = "📦 <b>Today's Orders</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n"
         text += f"📊 <b>Total Items Sold:</b> {total_items}\n"
         text += f"💰 <b>Total Sales:</b> ${total_sales:.2f}\n\n"
         text += "🧾 <b>Order Details:</b>\n"
