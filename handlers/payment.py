@@ -17,6 +17,30 @@ EMOJI_CART = "5368324170671202286"
 EMOJI_DONE = "5368324170671202287"
 EMOJI_SEARCH = "5368324170671202289"
 
+# ==========================================
+# 🟢 SMART DELIVERY FORMATTER
+# ==========================================
+def format_delivery_text(category: str, raw_data: str) -> str:
+    """ক্যাটাগরি অনুযায়ী ডেলিভারি মেসেজ সুন্দর করে সাজানোর ফাংশন"""
+    cat = category.lower()
+    parts = raw_data.split(":")
+    
+    if cat == "proxy" and len(parts) >= 4:
+        return (
+            f"🌐 <b>IP:</b> <code>{parts[0].strip()}</code>\n"
+            f"🔌 <b>Port:</b> <code>{parts[1].strip()}</code>\n"
+            f"👤 <b>User:</b> <code>{parts[2].strip()}</code>\n"
+            f"🔑 <b>Pass:</b> <code>{':'.join(parts[3:]).strip()}</code>"
+        )
+    elif cat == "vpn" and len(parts) >= 2:
+        return (
+            f"📧 <b>Mail:</b> <code>{parts[0].strip()}</code>\n"
+            f"🔐 <b>Pass:</b> <code>{':'.join(parts[1:]).strip()}</code>"
+        )
+    else:
+        # Subscription বা অন্য যেকোনো ফরম্যাটের জন্য ডিফল্ট
+        return f"🔗 <b>Link/Key:</b> <code>{raw_data}</code>"
+
 @router.callback_query(F.data.startswith("pay_"))
 async def process_payment(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
@@ -32,6 +56,7 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         return await callback.answer("❌ Error: Product not found!", show_alert=True)
         
     total_price = round(product['price'] * qty, 2)
+    cat_name = product.get('category', 'unknown') # 🟢 ক্যাটাগরি বের করে নেওয়া
     
     user_data = await get_user(user_id)
     if not user_data:
@@ -69,7 +94,7 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
             'completed_by': 'System', 'timestamp': firestore.SERVER_TIMESTAMP
         })
         
-        # ইউজারের কাছে অটো-ডেলিভারি মেসেজ পাঠানো
+        # 🟢 ইউজারের কাছে অটো-ডেলিভারি মেসেজ পাঠানো (Smart Format)
         delivery_text = (
             f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
             f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
@@ -78,8 +103,12 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
             f"💰 <b>Total Price:</b> ${total_price}\n"
             f"➖➖➖➖➖➖➖➖➖➖\n"
         )
+        
+        # 🟢 Smart Formatter কল করে আউটপুট সাজানো
         for idx, item in enumerate(delivered_items, 1):
-            delivery_text += f"🛍️ <b>Item {idx}:</b>\n<code>{item}</code>\n\n"
+            formatted_data = format_delivery_text(cat_name, item)
+            delivery_text += f"🛍️ <b>Item {idx}:</b>\n{formatted_data}\n\n"
+            
         delivery_text += "➖➖➖➖➖➖➖➖➖➖\n"
         
         buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{prod_id}", style="success")]])
