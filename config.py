@@ -24,7 +24,7 @@ else:
     
 
 # 🚀 নতুন সেটিংস (আপনার লিংকগুলো এখানে বসাবেন)
-YOUTUBE_LINK = "https://youtube.com/@AjimAhmed"
+TUTORIAL_LINK = "https://t.me/omni_sub/1235"
 SUPPORT_USERNAME = "https://t.me/OmniSub_Support"
 
 # 🚀 রেফারেল বোনাস (অ্যাডমিন হিসেবে আপনি যখন খুশি এটা চেঞ্জ করতে পারবেন)
