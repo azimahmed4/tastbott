@@ -4,7 +4,7 @@
 # ==========================================
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from config import YOUTUBE_LINK, SUPPORT_USERNAME, BOT_USERNAME, REFERRAL_BONUS
+from config import TUTORIAL_LINK, SUPPORT_USERNAME, BOT_USERNAME, REFERRAL_BONUS
 
 # 🚀 ফায়ারবেস ইমপোর্ট
 from database.crud import get_user
@@ -48,16 +48,20 @@ async def refer_menu(callback: CallbackQuery):
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# ❓ হাউ টু ইউজ মেনু (ফ্লেক্সিবল করা হলো)
+# ❓ হাউ টু ইউজ / হেল্প মেনু 
 @router.callback_query(F.data.in_(["menu_how_to_use", "menu_help"]))
 async def how_to_use_menu(callback: CallbackQuery):
-    text = "🎥 <b>How to Use Our Bot</b>\n\nClick the button below to watch the tutorial video on our YouTube channel."
+    text = (
+        "🎥 <b>How to Use Our Bot</b>\n\n"
+        "Need help? Click the button below to watch our full tutorial video on how to deposit and buy products easily."
+    )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📺 Watch Tutorial", url=YOUTUBE_LINK)],
+        # এখানে YOUTUBE_LINK এর ভেতরে আপনি আপনার চ্যানেলের ওই নির্দিষ্ট পোস্টের লিংকটা দিয়ে দেবেন
+        [InlineKeyboardButton(text="📺 Watch Tutorial Video", url=TUTORIAL_LINK)],
         [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
+    
 # 🎧 সাপোর্ট মেনু
 @router.callback_query(F.data == "menu_support")
 async def support_menu(callback: CallbackQuery):
