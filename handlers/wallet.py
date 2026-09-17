@@ -170,7 +170,6 @@ def verify_crypto_pay(trx_id: str, platform: str):
         if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
             return {"status": "error", "message": "Binance API keys not set."}
         try:
-            # 🚀 NEW: Firestore Database Global Cache & Lock
             cache_ref = db.collection('settings').document('binance_cache')
             cache_doc = cache_ref.get()
             
@@ -184,44 +183,24 @@ def verify_crypto_pay(trx_id: str, platform: str):
                 is_locked = c_data.get('is_locked', False)
                 cached_data = c_data.get('data', [])
                 
-                # যদি গত ৬০ সেকেন্ডের মধ্যে আপডেট হয়ে থাকে, তবে নতুন করে API কল করবে না
                 if current_time - last_update < 60:
                     needs_update = False
-                # যদি অন্য কোনো ইউজার ঠিক এই মুহূর্তে কল করে থাকে (Lock = True)
                 elif is_locked and current_time - last_update < 120:
                     needs_update = False
 
             if needs_update:
-                # 🔒 ডাটাবেস লক করা হলো যাতে অন্য প্রসেস API কল না করে
-                cache_ref.set({
-                    'is_locked': True, 
-                    'last_update': current_time, 
-                    'data': cached_data
-                }, merge=True)
+                cache_ref.set({'is_locked': True, 'last_update': current_time, 'data': cached_data}, merge=True)
                 
                 try:
                     client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
                     history = client.get_pay_trade_history(limit=100)
-                    
                     if history.get('code') == '000000' and 'data' in history:
                         cached_data = history['data']
-                    
-                    # 🔓 ডেটা সেভ করে লক খুলে দেওয়া হলো
-                    cache_ref.set({
-                        'is_locked': False, 
-                        'last_update': time.time(), 
-                        'data': cached_data
-                    })
+                    cache_ref.set({'is_locked': False, 'last_update': time.time(), 'data': cached_data})
                 except Exception as e:
-                    # যদি API কল ফেইল করে, তবুও যেন লক খুলে যায়
-                    cache_ref.set({
-                        'is_locked': False, 
-                        'last_update': time.time(), 
-                        'data': cached_data
-                    })
+                    cache_ref.set({'is_locked': False, 'last_update': time.time(), 'data': cached_data})
                     raise e
 
-            # ডাটাবেসের সেভ করা ডেটা থেকে ট্রানজেকশন খুঁজবে
             for tx in cached_data:
                 if tx.get('orderId') == trx_id or tx.get('transactionId') == trx_id:
                     if tx.get('fundsDetail'):
@@ -268,7 +247,7 @@ def verify_crypto_pay(trx_id: str, platform: str):
             return {"status": "error", "message": str(e)}
 
 @router.message(DepositState.waiting_for_crypto_trxid)
-async def process_crypto_trxid(message: Message, state: FSMContext):
+async def process_crypto_trxid(message: Message, state: FSMContext, bot: Bot):
     trx_id = message.text.strip()
     user_id = message.from_user.id
     
@@ -306,6 +285,18 @@ async def process_crypto_trxid(message: Message, state: FSMContext):
         await processing_msg.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
         await state.clear()
         
+        # 🟢 Admin Notification for Auto Crypto Deposit
+        admin_text = (
+            f"⚡ <b>AUTO DEPOSIT SUCCESS (CRYPTO)</b>\n"
+            f"👤 User ID: <code>{user_id}</code>\n"
+            f"💰 Amount: {amount_usd} {currency}\n"
+            f"🏦 Method: {platform_name}\n"
+            f"🧾 TrxID: <code>{trx_id}</code>"
+        )
+        for admin_id in ADMIN_IDS:
+            try: await bot.send_message(admin_id, admin_text, parse_mode="HTML")
+            except: pass
+        
     else:
         error_msg = result.get('message', 'Transaction not found.')
         fail_text = f"❌ <b>Verification Failed!</b>\n\n⚠️ {error_msg}\n\nPlease check your TrxID and try again."
@@ -314,7 +305,7 @@ async def process_crypto_trxid(message: Message, state: FSMContext):
         await state.clear()
 
 # ==========================================
-# 📱 LOCAL PAYMENT FLOW
+# 📱 LOCAL PAYMENT FLOW (SEAMLESS HYBRID SYSTEM)
 # ==========================================
 @router.message(DepositState.waiting_for_amount)
 async def receive_amount(message: Message, state: FSMContext):
@@ -369,54 +360,113 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     trxid = message.text.strip()
     user_id = message.from_user.id
     
+    processing_msg = await message.answer("⏳ <b>Processing your request...</b>\nPlease wait a moment.", parse_mode="HTML")
+    
     if db:
+        # Fraud Checks
         existing_deposits = db.collection('pending_deposits').where('trx_id', '==', trxid).limit(1).stream()
         for _ in existing_deposits:
-            await message.answer("❌ <b>Alert:</b> This Transaction ID has already been submitted in our system!\n\n<i>If you think this is a mistake, please contact support.</i>", parse_mode="HTML")
+            await processing_msg.edit_text("❌ <b>Alert:</b> This Transaction ID has already been submitted in our system!\n\n<i>If you think this is a mistake, please contact support.</i>", parse_mode="HTML")
             return 
             
         used_trx_doc = db.collection('used_trx').document(trxid).get()
         if used_trx_doc.exists:
-            await message.answer("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
+            await processing_msg.edit_text("❌ <b>Fraud Alert:</b> This Transaction ID has already been used!", parse_mode="HTML")
             return
 
     user_data = await state.get_data()
     
-    method_name = user_data.get("payment_method")
-    amount = user_data.get("deposit_amount", 0) 
+    method_name = user_data.get("payment_method", "Payment")
+    method_key = user_data.get("method_key", "bkash")
+    expected_amount = user_data.get("deposit_amount", 0.0) 
     sender_number = user_data.get("sender_number", "Unknown")
     currency = "BDT"
     
+    # ====================================================
+    # 🟢 SEAMLESS HYBRID LOGIC (TRY AUTO-VERIFY FIRST)
+    # ====================================================
+    is_auto_verified = False
+    
+    if db:
+        sms_doc_ref = db.collection('live_sms_payments').document(trxid)
+        sms_doc = sms_doc_ref.get()
+        
+        if sms_doc.exists:
+            sms_data = sms_doc.to_dict()
+            actual_amount = float(sms_data.get('amount', 0.0))
+            is_used = sms_data.get('is_used', False)
+            
+            # Auto Verify Condition Met
+            if not is_used and actual_amount >= expected_amount:
+                amount_usd = round(actual_amount / 125.0, 2)
+                
+                # Update DB for auto-verify success
+                sms_doc_ref.update({'is_used': True, 'claimed_by': user_id})
+                db.collection('used_trx').document(trxid).set({'user_id': user_id, 'amount': actual_amount, 'platform': method_key, 'timestamp': firestore.SERVER_TIMESTAMP})
+                await save_deposit_history(user_id=user_id, amount=actual_amount, method=method_name, trx_id=trxid, currency="BDT")
+                db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
+                
+                is_auto_verified = True
+                
+                # Success Notification for User
+                success_text = (
+                    f"🎉 <b>{method_name} Payment Verified Successfully!</b>\n\n"
+                    f"🧾 <b>TrxID:</b> <code>{trxid}</code>\n"
+                    f"💰 <b>Amount Received:</b> {actual_amount} BDT\n"
+                    f"💎 <b>Added to Wallet:</b> ${amount_usd}\n\n"
+                    f"<i>Your balance has been updated instantly.</i>"
+                )
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Go to Shop", callback_data="menu_buy", style="success", icon_custom_emoji_id=EMOJI_CART)]])
+                await processing_msg.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
+                
+                # 🟢 Admin Notification for Auto Local Deposit
+                admin_text = (
+                    f"⚡ <b>AUTO DEPOSIT SUCCESS (LOCAL)</b>\n"
+                    f"👤 User ID: <code>{user_id}</code>\n"
+                    f"💰 Amount: {actual_amount} BDT\n"
+                    f"🏦 Via: {method_name}\n"
+                    f"🧾 TrxID: <code>{trxid}</code>"
+                )
+                for admin_id in ADMIN_IDS:
+                    try: await bot.send_message(admin_id, admin_text, parse_mode="HTML")
+                    except: pass
+
     await state.clear()
     
-    deposit_id = await create_pending_deposit(
-        user_id=user_id, amount=amount, method=method_name, sender_number=sender_number, trx_id=trxid
-    )
+    # ====================================================
+    # 🟠 FALLBACK TO MANUAL VERIFICATION (IF AUTO FAILS/NOT FOUND)
+    # ====================================================
+    if not is_auto_verified:
+        deposit_id = await create_pending_deposit(
+            user_id=user_id, amount=expected_amount, method=method_name, sender_number=sender_number, trx_id=trxid
+        )
 
-    admin_text = (
-        "💰 <b>NEW DEPOSIT REQUEST!</b>\n\n"
-        f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-        f"🏦 <b>Method:</b> {method_name}\n"
-        f"📱 <b>Sender:</b> <code>{sender_number}</code>\n"
-        f"💵 <b>Amount:</b> {amount} {currency}\n"
-        f"🧾 <b>TrxID:</b> <code>{trxid}</code>"
-    )
-    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Verify Now", callback_data=f"viewdep_{deposit_id}", style="success", icon_custom_emoji_id=EMOJI_DONE)]
-    ])
-    
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
-        except Exception:
-            pass
+        # Admin gets Manual Approval Request
+        admin_text = (
+            "💰 <b>NEW DEPOSIT REQUEST! (Manual)</b>\n\n"
+            f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+            f"🏦 <b>Method:</b> {method_name}\n"
+            f"📱 <b>Sender:</b> <code>{sender_number}</code>\n"
+            f"💵 <b>Amount:</b> {expected_amount} {currency}\n"
+            f"🧾 <b>TrxID:</b> <code>{trxid}</code>"
+        )
+        admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Verify Now", callback_data=f"viewdep_{deposit_id}", style="success", icon_custom_emoji_id=EMOJI_DONE)]
+        ])
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
+            except Exception:
+                pass
 
-    pending_text = (
-        "⏳ <b>Deposit Request Submitted!</b>\n\n"
-        f"🏦 <b>Method:</b> {method_name}\n"
-        f"💵 <b>Amount:</b> {amount} {currency}\n"
-        f"🧾 <b>TrxID:</b> <code>{trxid}</code>\n\n"
-        "👨‍💻 <i>Your transaction has been securely sent to the admin. Your account will be updated once approved.</i>"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Main Menu", callback_data="back_to_main", style="primary")]])
-    await message.answer(pending_text, reply_markup=keyboard, parse_mode="HTML")
+        # User sees standard pending message silently (no failure notice)
+        pending_text = (
+            "⏳ <b>Deposit Request Submitted!</b>\n\n"
+            f"🏦 <b>Method:</b> {method_name}\n"
+            f"💵 <b>Amount:</b> {expected_amount} {currency}\n"
+            f"🧾 <b>TrxID:</b> <code>{trxid}</code>\n\n"
+            "👨‍💻 <i>Your transaction has been securely sent to the admin. Your account will be updated once approved.</i>"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Main Menu", callback_data="back_to_main", style="primary")]])
+        await processing_msg.edit_text(pending_text, reply_markup=keyboard, parse_mode="HTML")
