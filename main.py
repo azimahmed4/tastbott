@@ -1,6 +1,5 @@
 # main.py
 import asyncio 
-from keep_alive import keep_alive
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramServerError, TelegramNetworkError
 from config import BOT_TOKEN
@@ -52,7 +51,7 @@ async def main():
 
 if __name__ == "__main__":
     # ফেক ওয়েব সার্ভার চালু করার ম্যাজিক কোড
-    keep_alive() 
+    ##keep_alive() 
     
     try:
         asyncio.run(main())
