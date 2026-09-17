@@ -154,7 +154,7 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         await state.set_state(DepositState.waiting_for_amount)
         
         instruction = (
-            f"📱 <b>{method_name} (Manual Verification)</b>\n\n"
+            f"📱 <b>{method_name} (Auto Verification)</b>\n\n"
             "🔹 <b>Minimum Deposit:</b> 20 BDT\n\n"
             "⚠️ <b>How much money do you want to deposit?</b>\n"
             "<i>(Type the amount in BDT below. Example: 100)</i>"
