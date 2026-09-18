@@ -6,7 +6,9 @@ from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from firebase_admin import firestore
 from database.crud import db, get_user, get_product, create_pending_order, generate_invoice_id
-from config import ADMIN_IDS, BOT_USERNAME
+
+# 🟢 NEW: MAIN_GROUPS_ID ইমপোর্ট করা হলো রিয়েল সেলস অ্যালার্ট পাঠানোর জন্য
+from config import ADMIN_IDS, BOT_USERNAME, MAIN_GROUPS_ID 
 
 router = Router()
 
@@ -41,6 +43,41 @@ def format_delivery_text(category: str, raw_data: str) -> str:
         # Subscription বা অন্য যেকোনো ফরম্যাটের জন্য ডিফল্ট
         return f"🔗 <b>Link/Key:</b> <code>{raw_data}</code>"
 
+# 🟢 NEW: রিয়েল সেলস অ্যালার্ট পাঠানোর ফাংশন
+async def send_real_sales_alert(bot: Bot, product_id: str, product_name: str, user_id: int):
+    """রিয়েল টাইম সেলস অ্যালার্ট গ্রুপে পাঠানোর ফাংশন"""
+    if not MAIN_GROUPS_ID:
+        return
+        
+    try:
+        # ইউজারের আইডি মাস্ক করা (e.g., 105***78)
+        str_uid = str(user_id)
+        if len(str_uid) > 4:
+            masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}"
+        else:
+            masked_uid = f"{str_uid[:1]}***{str_uid[-1:]}"
+            
+        promo_text = (
+            f"🎉 <b>New Order Placed!</b>\n\n"
+            f"👤 User <code>{masked_uid}</code> just purchased:\n"
+            f"🛍️ <b>{product_name}</b>\n\n"
+            f"⚡️ <i>Delivered automatically in seconds.</i>"
+        )
+        
+        buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
+        buy_btn = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]
+        ])
+        
+        await bot.send_message(
+            chat_id=MAIN_GROUPS_ID,
+            text=promo_text,
+            parse_mode="HTML",
+            reply_markup=buy_btn
+        )
+    except Exception as e:
+        pass # গ্রুপে অ্যালার্ট পাঠাতে ফেইল করলে মেইন প্রসেস যেন ক্র্যাশ না করে
+
 @router.callback_query(F.data.startswith("pay_"))
 async def process_payment(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
@@ -56,7 +93,7 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         return await callback.answer("❌ Error: Product not found!", show_alert=True)
         
     total_price = round(product['price'] * qty, 2)
-    cat_name = product.get('category', 'unknown') # 🟢 ক্যাটাগরি বের করে নেওয়া
+    cat_name = product.get('category', 'unknown') 
     
     user_data = await get_user(user_id)
     if not user_data:
@@ -104,7 +141,6 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
             f"➖➖➖➖➖➖➖➖➖➖\n"
         )
         
-        # 🟢 Smart Formatter কল করে আউটপুট সাজানো
         for idx, item in enumerate(delivered_items, 1):
             formatted_data = format_delivery_text(cat_name, item)
             delivery_text += f"🛍️ <b>Item {idx}:</b>\n{formatted_data}\n\n"
@@ -113,6 +149,9 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         
         buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{prod_id}", style="success")]])
         await callback.message.edit_text(delivery_text, reply_markup=buy_again_kb, parse_mode="HTML")
+        
+        # 🟢 NEW: রিয়েল সেলস অ্যালার্ট গ্রুপে পাঠানো
+        await send_real_sales_alert(bot, prod_id, product['name'], user_id)
         
         # স্টক কমে গেলে অ্যাডমিনদের অটোমেটিক অ্যালার্ট দেওয়া
         if len(remaining_stock) <= 2:
