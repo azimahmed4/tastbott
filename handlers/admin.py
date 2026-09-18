@@ -12,7 +12,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
 
-from config import ADMIN_IDS, MAIN_CHANNEL_ID, BOT_USERNAME
+# 🟢 NEW: MAIN_GROUPS_ID ইমপোর্ট করা হলো রিয়েল সেলস অ্যালার্টের জন্য
+from config import ADMIN_IDS, MAIN_CHANNEL_ID, MAIN_GROUPS_ID, BOT_USERNAME
 from database.crud import (db, get_product, delete_product, add_subcategory, get_subcategories, 
                            delete_subcategory, get_products_by_category, save_deposit_history, 
                            get_deposit_statement, set_bot_status, get_bot_status,
@@ -664,11 +665,13 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     if doc.exists and doc.to_dict().get('status') == 'pending':
         data = doc.to_dict()
         user_id = data.get('user_id')
+        product_id = data.get('product_id')
+        product_name = data.get('product_name')
         
         delivery_text = (
             f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
             f"🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n"
-            f"📦 <b>Package:</b> {data.get('product_name')}\n"
+            f"📦 <b>Package:</b> {product_name}\n"
             f"🔢 <b>Quantity:</b> {total_qty}\n"
             f"💰 <b>Total Price:</b> ${data.get('total_price')}\n"
             f"➖➖➖➖➖➖➖➖➖➖\n"
@@ -679,18 +682,44 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
             
         delivery_text += "➖➖➖➖➖➖➖➖➖➖\n"
         
-        buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{data.get('product_id')}", style="success")]])
+        buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{product_id}", style="success")]])
         
         try: await bot.send_message(user_id, delivery_text, parse_mode="HTML", reply_markup=buy_again_kb)
         except Exception: pass
         
         db.collection('orders').document(order_id).set({
             'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 
-            'product_id': data.get('product_id'), 'product_name': data.get('product_name'),
+            'product_id': product_id, 'product_name': product_name,
             'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': delivered_items, 
             'completed_by': 'Admin', 'timestamp': firestore.SERVER_TIMESTAMP
         })
         doc_ref.delete()
+        
+        # 🟢 NEW: રিয়েল সেলস অ্যালার্ট গ্রুপে পাঠানো (ম্যানুয়াল ডেলিভারি শেষে)
+        if MAIN_GROUPS_ID:
+            try:
+                str_uid = str(user_id)
+                masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}" if len(str_uid) > 4 else f"{str_uid[:1]}***{str_uid[-1:]}"
+                
+                promo_text = (
+                    f"🎉 <b>New Order Placed!</b>\n\n"
+                    f"👤 User <code>{masked_uid}</code> just purchased:\n"
+                    f"🛍️ <b>{product_name}</b>\n\n"
+                    f"⚡️ <i>Delivered securely by Admin.</i>"
+                )
+                
+                buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
+                buy_btn = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]
+                ])
+                
+                await bot.send_message(
+                    chat_id=MAIN_GROUPS_ID,
+                    text=promo_text,
+                    parse_mode="HTML",
+                    reply_markup=buy_btn
+                )
+            except Exception: pass
         
     await state.clear()
     try:
@@ -871,9 +900,9 @@ async def process_desc_update(message: Message, state: FSMContext):
     html_tags = ["<b>", "<i>", "<u>", "<s>", "<code>", "<pre>", "<blockquote>", "<a href"]
     
     if any(tag in raw_text.lower() for tag in html_tags):
-        new_desc = raw_text # User manually typed/pasted HTML
+        new_desc = raw_text 
     else:
-        new_desc = message.html_text # User used Telegram formatting
+        new_desc = message.html_text 
     
     data = await state.get_data()
     prod_id = data['product_id']
