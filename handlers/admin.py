@@ -93,12 +93,12 @@ class AddProductState(StatesGroup):
     sub_category = State()
     name = State()
     price = State()
-    description = State() # 🟢 NEW: Product Description State
+    description = State()
 
 class EditProductState(StatesGroup):
     waiting_for_price = State()
     waiting_for_stock = State()
-    waiting_for_desc = State() # 🟢 NEW: Edit Description State
+    waiting_for_desc = State() 
     product_id = State()
     old_price = State()
     prod_name = State()
@@ -205,7 +205,6 @@ async def toggle_autopost_mode(callback: CallbackQuery):
     await callback.answer(f"Channel Auto-Post is now {'ON' if new_status else 'OFF'}")
     menu = await get_admin_menu()
     await callback.message.edit_reply_markup(reply_markup=menu)
-
 
 # ==========================================
 # ⚙️ PAYMENT SETTINGS PANEL (ON/OFF & Edit)
@@ -819,7 +818,7 @@ async def edit_product_menu(callback: CallbackQuery):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
-        [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="success")], # 🟢 NEW BUTTON
+        [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="success")],
         [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
         [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
     ])
@@ -840,9 +839,9 @@ async def start_update_product(callback: CallbackQuery, state: FSMContext):
         await state.set_state(EditProductState.waiting_for_price)
         await callback.message.edit_text(f"💲 <b>Update Price for {product.get('name')}</b>\n\nCurrent Price: ${product.get('price')}\n\nEnter the new price below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
     
-    elif action == "desc": # 🟢 NEW: Handle description edit
+    elif action == "desc":
         await state.set_state(EditProductState.waiting_for_desc)
-        await callback.message.edit_text(f"📝 <b>Edit Description for {product.get('name')}</b>\n\nEnter the new description below. You can use HTML tags like <code>&lt;b&gt;bold&lt;/b&gt;</code>, <code>&lt;i&gt;italic&lt;/i&gt;</code>, or <code>&lt;blockquote&gt;quote&lt;/blockquote&gt;</code>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
+        await callback.message.edit_text(f"📝 <b>Edit Description for {product.get('name')}</b>\n\nEnter the new description below.\n\n<i>Tip: You can use Telegram's bold/italic formatting, or paste raw HTML code like <code>&lt;b&gt;text&lt;/b&gt;</code>.</i>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
         
     elif action == "stock":
         await state.set_state(EditProductState.waiting_for_stock)
@@ -866,7 +865,15 @@ async def start_update_product(callback: CallbackQuery, state: FSMContext):
 @router.message(EditProductState.waiting_for_desc)
 async def process_desc_update(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    new_desc = message.html_text # Capture HTML formatting
+    
+    # 🟢 SMART DETECTION: Check if user pasted raw HTML or used normal text
+    raw_text = message.text or ""
+    html_tags = ["<b>", "<i>", "<u>", "<s>", "<code>", "<pre>", "<blockquote>", "<a href"]
+    
+    if any(tag in raw_text.lower() for tag in html_tags):
+        new_desc = raw_text # User manually typed/pasted HTML
+    else:
+        new_desc = message.html_text # User used Telegram formatting
     
     data = await state.get_data()
     prod_id = data['product_id']
@@ -978,7 +985,7 @@ async def save_subcat(message: Message, state: FSMContext):
     await message.answer(f"✅ Sub-category added to {cat.upper()}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}", style="primary")]]))
 
 # ==========================================
-# 🆕 Add Product (With Description)
+# 🆕 Add Product (With Smart Description)
 # ==========================================
 @router.callback_query(F.data == "add_new_product")
 async def add_product_category(callback: CallbackQuery, state: FSMContext):
@@ -1025,7 +1032,7 @@ async def add_product_description(message: Message, state: FSMContext):
     await state.set_state(AddProductState.description)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏭️ Skip (Use Default)", callback_data="skip_desc")]])
-    await message.answer("📝 <b>Enter Product Description:</b>\n(You can use HTML tags or click Skip to use the default)", reply_markup=keyboard, parse_mode="HTML")
+    await message.answer("📝 <b>Enter Product Description:</b>\n(You can use Telegram's bold/italic formatting, paste raw HTML, or click Skip to use the default)", reply_markup=keyboard, parse_mode="HTML")
 
 @router.callback_query(F.data == "skip_desc")
 async def save_new_product_skip_desc(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -1034,7 +1041,16 @@ async def save_new_product_skip_desc(callback: CallbackQuery, state: FSMContext,
 
 @router.message(AddProductState.description)
 async def save_new_product_with_desc(message: Message, state: FSMContext, bot: Bot):
-    await save_product_to_db(message, state, bot, desc=message.html_text)
+    # 🟢 SMART DETECTION for New Product
+    raw_text = message.text or ""
+    html_tags = ["<b>", "<i>", "<u>", "<s>", "<code>", "<pre>", "<blockquote>", "<a href"]
+    
+    if any(tag in raw_text.lower() for tag in html_tags):
+        desc = raw_text 
+    else:
+        desc = message.html_text
+        
+    await save_product_to_db(message, state, bot, desc=desc)
 
 async def save_product_to_db(message: Message, state: FSMContext, bot: Bot, desc: str = None):
     data = await state.get_data()
