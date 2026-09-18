@@ -14,52 +14,40 @@ from database.crud import (db, get_products_by_category, get_product, get_subcat
 router = Router()
 
 ITEMS_PER_PAGE = 10 
-ORDERS_PER_PAGE = 3 # My Orders এ প্রতি পেজে কয়টি অর্ডার দেখাবে
+ORDERS_PER_PAGE = 3 
 
 # ==========================================
-# 🎨 PREMIUM EMOJI IDs 
+# 📌 States
 # ==========================================
-EMOJI_CART = "5368324170671202286"
-EMOJI_BOX = "5368324170671202287"
-EMOJI_MONEY = "5368324170671202288"
-EMOJI_SEARCH = "5368324170671202289"
-EMOJI_VPN = "🌐"
-EMOJI_PROXY = "🛡️"
-EMOJI_SUB = "🎟️"
-EMOJI_AI = "🤖"
-EMOJI_BACK = "◀️"
-EMOJI_DIR = "📂"
-
 class InvoiceSearchState(StatesGroup):
     waiting_for_invoice = State()
 
 # ==========================================
-# 🛒 SHOP MAIN MENU (Styled with Emojis)
+# 🛒 SHOP MAIN MENU (Clean & Original)
 # ==========================================
 @router.callback_query(F.data == "menu_buy")
 async def show_categories(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    text = "🛒 <b>Shop Categories</b>\n\n✨ <i>Please select a category below to browse our awesome products:</i>"
+    text = "🛒 <b>Shop Categories</b>\n\nPlease select a category:"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text=f"{EMOJI_VPN} Premium VPN", callback_data="showcat_vpn", style="primary"),
-            InlineKeyboardButton(text=f"{EMOJI_PROXY} Secure Proxy", callback_data="showcat_proxy", style="primary")
+            InlineKeyboardButton(text="🌐 VPN", callback_data="showcat_vpn", style="primary"),
+            InlineKeyboardButton(text="🛡️ Proxy", callback_data="showcat_proxy", style="primary")
         ],
         [
-            InlineKeyboardButton(text=f"{EMOJI_SUB} Subscriptions", callback_data="showcat_sub", style="primary"),
-            InlineKeyboardButton(text=f"{EMOJI_AI} AI Services", callback_data="showcat_ai", style="primary")
+            InlineKeyboardButton(text="🎟️ Subscription", callback_data="showcat_sub", style="primary"),
+            InlineKeyboardButton(text="🤖 AI Service", callback_data="showcat_ai", style="primary")
         ],
-        # 🟢 My Orders and Search Button
         [
-            InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders|0", style="primary", icon_custom_emoji_id=EMOJI_BOX),
-            InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", style="primary", icon_custom_emoji_id=EMOJI_SEARCH)
+            InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders|0", style="primary"),
+            InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", style="primary")
         ],
-        [InlineKeyboardButton(text=f"{EMOJI_BACK} Go Back", callback_data="back_to_main", style="danger")]
+        [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# 📦 MY ORDERS (Pagination) & INVOICE SEARCH
+# 📦 MY ORDERS & INVOICE SEARCH
 # ==========================================
 @router.callback_query(F.data.startswith("my_orders|"))
 async def view_my_orders(callback: CallbackQuery):
@@ -68,12 +56,11 @@ async def view_my_orders(callback: CallbackQuery):
     
     if not db: return await callback.answer("Database Error", show_alert=True)
     
-    # ইউজার এর সব অর্ডার নিয়ে আসা
     docs = db.collection('orders').where('user_id', '==', int(user_id)).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
     all_orders = [doc.to_dict() for doc in docs]
     
     if not all_orders:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{EMOJI_BACK} Back to Shop", callback_data="menu_buy")]])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Shop", callback_data="menu_buy")]])
         return await callback.message.edit_text("📦 <b>My Orders</b>\n\n⚠️ You haven't placed any orders yet.", reply_markup=keyboard, parse_mode="HTML")
         
     total_orders = len(all_orders)
@@ -101,7 +88,7 @@ async def view_my_orders(callback: CallbackQuery):
     keyboard = []
     if nav_row: keyboard.append(nav_row)
     keyboard.append([InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice")])
-    keyboard.append([InlineKeyboardButton(text=f"{EMOJI_BACK} Back to Shop", callback_data="menu_buy")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Shop", callback_data="menu_buy")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
@@ -118,7 +105,6 @@ async def process_invoice_search(message: Message, state: FSMContext):
     
     if not db: return
     
-    # প্রথমে Completed Orders এ খুঁজবে
     order = None
     status = ""
     docs = db.collection('orders').where('invoice_id', '==', invoice_id).limit(1).stream()
@@ -126,7 +112,6 @@ async def process_invoice_search(message: Message, state: FSMContext):
         order = d.to_dict()
         status = "✅ Delivered / Success"
         
-    # না পেলে Pending Orders এ খুঁজবে
     if not order:
         docs = db.collection('pending_orders').where('invoice_id', '==', invoice_id).limit(1).stream()
         for d in docs:
@@ -137,7 +122,6 @@ async def process_invoice_search(message: Message, state: FSMContext):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Try Again", callback_data="search_invoice")]])
         return await message.answer(f"❌ <b>Invoice Not Found!</b>\nPlease check the ID: <code>{invoice_id}</code>", reply_markup=keyboard, parse_mode="HTML")
         
-    # 🟢 Smart Invoice Output 
     text = (
         f"✔️ <b>ORDER STATUS</b>\n\n"
         f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
@@ -164,13 +148,13 @@ async def show_subcategories_or_products(callback: CallbackQuery):
         subcats = await get_subcategories(cat)
         keyboard = []
         for i in range(0, len(subcats), 2):
-            row = [InlineKeyboardButton(text=f"{EMOJI_DIR} {subcats[i]['name']}", callback_data=f"shop_p|{cat}|{subcats[i]['subcat_id']}|0")]
+            row = [InlineKeyboardButton(text=f"📁 {subcats[i]['name']}", callback_data=f"shop_p|{cat}|{subcats[i]['subcat_id']}|0")]
             if i + 1 < len(subcats):
-                row.append(InlineKeyboardButton(text=f"{EMOJI_DIR} {subcats[i+1]['name']}", callback_data=f"shop_p|{cat}|{subcats[i+1]['subcat_id']}|0"))
+                row.append(InlineKeyboardButton(text=f"📁 {subcats[i+1]['name']}", callback_data=f"shop_p|{cat}|{subcats[i+1]['subcat_id']}|0"))
             keyboard.append(row)
             
-        keyboard.append([InlineKeyboardButton(text=f"{EMOJI_BACK} Back", callback_data="menu_buy")])
-        await callback.message.edit_text(f"📂 <b>Select Validity/Type:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="menu_buy")])
+        await callback.message.edit_text(f"📁 <b>Select Validity/Type:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     else:
         await display_products(callback, cat, "none", 0)
 
@@ -194,11 +178,11 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     keyboard = []
     for i in range(0, len(current_products), 2):
         pid1, details1 = current_products[i]
-        row = [InlineKeyboardButton(text=f"▪️ {details1['name']}", callback_data=f"buy_{pid1}", style="primary")]
+        row = [InlineKeyboardButton(text=f"{details1['name']}", callback_data=f"buy_{pid1}", style="primary")]
         
         if i + 1 < len(current_products):
             pid2, details2 = current_products[i+1]
-            row.append(InlineKeyboardButton(text=f"▪️ {details2['name']}", callback_data=f"buy_{pid2}", style="primary"))
+            row.append(InlineKeyboardButton(text=f"{details2['name']}", callback_data=f"buy_{pid2}", style="primary"))
         keyboard.append(row)
         
     nav_row = []
@@ -210,13 +194,13 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     if nav_row: keyboard.append(nav_row)
         
     back_target = f"showcat_{cat}" if cat in ['vpn', 'proxy'] else "menu_buy"
-    keyboard.append([InlineKeyboardButton(text="🏠 Back to Categories", callback_data=back_target, style="danger")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Categories", callback_data=back_target, style="danger")])
     
     text = "📦 <b>Select a Package:</b>" if current_products else "⚠️ <b>No products found here.</b>"
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 # ==========================================
-# 🛒 BUYING PROCESS (Quantity Selection)
+# 🛒 BUYING PROCESS (Simple + View Note + Wallet)
 # ==========================================
 @router.callback_query(F.data.startswith("buy_"))
 async def start_buy(callback: CallbackQuery):
@@ -225,7 +209,6 @@ async def start_buy(callback: CallbackQuery):
     
 @router.callback_query(F.data.startswith("buyprod_"))
 async def buy_again_shortcut(callback: CallbackQuery):
-    """Buy Again বাটন থেকে সরাসরি কোয়ান্টিটি সিলেক্টরে আসবে"""
     prod_id = callback.data.split("_")[1]
     await show_quantity_selector(callback, prod_id, 1)
 
@@ -242,19 +225,29 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
     if not product:
         return await callback.answer("❌ Error: Product not found!", show_alert=True)
     
+    # 🟢 Fetch User Balance for "Wallet" display
+    user_id = str(callback.from_user.id)
+    wallet_balance = 0.0
+    if db:
+        user_doc = db.collection('users').document(user_id).get()
+        if user_doc.exists:
+            wallet_balance = user_doc.to_dict().get('balance', 0.0)
+
     total_price = round(product['price'] * qty, 2)
     cat = product.get('category', 'vpn')
     subcat = product.get('sub_category', 'none')
     
     back_btn = f"shop_p|{cat}|{subcat}|0" if subcat and subcat != "none" else f"showcat_{cat}"
     
+    # 🟢 Clean and Simple UI matched with Bot's original theme
     text = (
         f"🛒 <b>Order Summary</b>\n\n"
         f"📦 <b>Product:</b> {product['name']}\n"
         f"💲 <b>Unit Price:</b> ${product['price']}\n"
         "➖➖➖➖➖➖➖➖➖➖\n"
         f"🔢 <b>Quantity:</b> {qty}\n"
-        f"💰 <b>Total Price:</b> ${total_price}\n\n"
+        f"💰 <b>Total Price:</b> ${total_price}\n"
+        f"💵 <b>Your Wallet:</b> ${wallet_balance:.2f}\n\n"
         "<i>Use the + and - buttons to adjust quantity:</i>"
     )
     
@@ -264,8 +257,8 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
             InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty"),
             InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}")
         ],
-        # 🟢 এই বাটনটি payment.py ফাইলে process_payment কে ট্রিগার করবে
-        [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}", style="success", icon_custom_emoji_id=EMOJI_CART)],
+        [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}", style="success")],
+        [InlineKeyboardButton(text="📝 View Note", callback_data=f"view_note_{prod_id}", style="primary")],
         [InlineKeyboardButton(text="◀️ Cancel", callback_data=back_btn, style="danger")]
     ])
     
@@ -275,3 +268,49 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
 @router.callback_query(F.data == "ignore_qty")
 async def ignore_qty_click(callback: CallbackQuery):
     await callback.answer("Use + or - to change quantity.")
+
+# ==========================================
+# 📝 VIEW PRODUCT NOTE / RULES
+# ==========================================
+@router.callback_query(F.data.startswith("view_note_"))
+async def show_product_note(callback: CallbackQuery):
+    prod_id = callback.data.split("_", 2)[2]
+    product = await get_product(prod_id)
+    if not product: return await callback.answer("❌ Error loading product note.")
+    
+    custom_desc = product.get('description')
+    
+    if custom_desc:
+        note_content = custom_desc
+    else:
+        # 🟢 BEAUTIFUL DEFAULT NOTE (Blockquote format)
+        note_content = (
+            "<b>Description:</b>\n"
+            "<blockquote>"
+            "YOU WILL RECEIVE YOUR PURCHASE DETAILS SHORTLY AFTER CONFIRMATION.\n"
+            "ACTIVATE IT ON YOUR OWN ACCOUNT BY YOURSELF.\n"
+            "PAYMENT REQUIRED FOR ACTIVATION.\n"
+            "WORKS ON NEW OR OLD ACCOUNTS.\n"
+            "ALL PREMIUM FEATURES WILL BE UNLOCKED."
+            "</blockquote>\n"
+            "<b>Note:</b>\n"
+            "<blockquote>"
+            "✅ OFFICIAL ACTIVATION LINK / KEY\n"
+            "✅ SELF REDEEM / SELF ACTIVATION\n"
+            "✅ WORKS ON PERSONAL ACCOUNTS\n"
+            "✅ SUPPORTS ALL DEVICES\n"
+            "✅ NO ACCOUNT SHARING REQUIRED\n"
+            "❌ NO WARRANTY IF RULES BROKEN\n"
+            "❌ MUST BE CLAIMED WITHIN 24 HOURS\n"
+            "❌ LOGIN MUST ON JUST 1 DEVICE TRY TO DON'T USE MULTIPLE.\n"
+            "⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️\n"
+            "<i>DO NOT OPEN THE LINK JUST TO CHECK. IF YOU DO, IT WILL BECOME INVALID.</i>"
+            "</blockquote>"
+        )
+
+    text = f"📦 <b>{product['name']}</b>\n\n{note_content}"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Back to Purchase", callback_data=f"buy_{prod_id}", style="primary")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
