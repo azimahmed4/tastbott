@@ -10,7 +10,7 @@ from database.crud import db
 app = FastAPI(title="OmniSub SMS Webhook")
 
 # 🟢 NEW: UptimeRobot/Cron-job Ping Endpoint (To keep Render 24/7 Awake)
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD", "POST", "OPTIONS"])
 async def root_ping():
     return {"status": "Alive", "message": "OmniSub SMS Webhook is running 24/7!"}
 
