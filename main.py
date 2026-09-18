@@ -67,7 +67,7 @@ async def simulated_sales_loop(bot: Bot):
             
             # গ্রুপে মেসেজ সেন্ড করা
             await bot.send_message(
-                chat_id=MAIN_CHANNEL_ID,
+                chat_id=MAIN_GROUPS_ID,
                 text=promo_text,
                 parse_mode="HTML",
                 reply_markup=buy_btn
