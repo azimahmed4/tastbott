@@ -9,6 +9,11 @@ from database.crud import db
 
 app = FastAPI(title="OmniSub SMS Webhook")
 
+# 🟢 NEW: UptimeRobot/Cron-job Ping Endpoint (To keep Render 24/7 Awake)
+@app.get("/")
+async def root_ping():
+    return {"status": "Alive", "message": "OmniSub SMS Webhook is running 24/7!"}
+
 @app.post("/webhook/sms")
 async def receive_sms(request: Request):
     try:
@@ -21,7 +26,7 @@ async def receive_sms(request: Request):
         if not any(allowed in sender for allowed in allowed_senders):
             return {"status": "ignored", "reason": "Not a valid payment gateway."}
 
-        # ২. রেজেক্স (Regex) দিয়ে TrxID এবং Amount বের করা (100% Accurate)
+        # ২. রেজেক্স (Regex) দিয়ে TrxID এবং Amount বের করা (100% Accurate)
         # bKash/Nagad/Rocket এর SMS ফরম্যাট অনুযায়ী
         trx_match = re.search(r'(?:TrxID|TxnID)\s*[:\-]?\s*([A-Za-z0-9]+)', message, re.IGNORECASE)
         amount_match = re.search(r'Tk\s*[:\-]?\s*([\d\.,]+)', message, re.IGNORECASE)
