@@ -29,7 +29,7 @@ async def simulated_sales_loop(bot: Bot):
     
     while True:
         # 30 মিনিট (1800 সেকেন্ড) থেকে 90 মিনিট (5400 সেকেন্ড) এর মধ্যে র‍্যান্ডম সময়
-        sleep_interval = random.randint(1800, 5400) 
+        sleep_interval = random.randint(20, 40) 
         await asyncio.sleep(sleep_interval)
         
         try:
