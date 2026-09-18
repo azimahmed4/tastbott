@@ -31,7 +31,7 @@ EMOJI_USER = "5368324170671202289"
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-# 🟢 NEW: Auto-Post Settings Helper Functions
+# 🟢 Auto-Post Settings Helper Functions
 async def get_autopost_status():
     if not db: return True
     doc = db.collection('settings').document('autopost').get()
@@ -49,7 +49,6 @@ async def get_admin_menu():
     m_text = "🛠️ Turn Maintenance OFF" if is_maintenance else "⚙️ Turn Maintenance ON"
     m_style = "danger" if is_maintenance else "primary"
     
-    # 🟢 NEW: Channel Auto-Post Toggle
     is_autopost = await get_autopost_status()
     ap_text = "🔕 Channel Post: OFF" if not is_autopost else "🔔 Channel Post: ON"
     ap_style = "danger" if not is_autopost else "success"
@@ -119,7 +118,7 @@ class UserManageState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
     waiting_for_button = State()
-    waiting_for_destination = State() # 🟢 NEW: Where to send
+    waiting_for_destination = State() 
     product_btn_id = State()
 
 class PaymentSettingState(StatesGroup):
@@ -422,10 +421,12 @@ async def show_recent_orders(callback: CallbackQuery):
         qty = data.get('qty', 1)
         price = data.get('total_price', 0.0)
         prod_name = data.get('product_name', 'Unknown')
+        invoice_id = data.get('invoice_id', doc.id)  # 🟢 Extracting Tracking ID
         
         total_items += qty
         total_sales += price
-        orders_list.append(f"📦 <b>{prod_name}</b> (x{qty}) - ${price}")
+        # 🟢 Added Tracking/Invoice ID to the output
+        orders_list.append(f"📦 <b>{prod_name}</b> (x{qty}) - ${price}\n   └ 🔖 <b>Trk ID:</b> <code>{invoice_id}</code>")
         
     if not orders_list:
         text = "📦 <b>Today's Orders</b>\n<i>(Since Midnight 12:00 AM BDT)</i>\n\n⚠️ No orders have been completed today."
@@ -837,7 +838,6 @@ async def start_update_product(callback: CallbackQuery, state: FSMContext):
         await state.set_state(EditProductState.waiting_for_price)
         await callback.message.edit_text(f"💲 <b>Update Price for {product.get('name')}</b>\n\nCurrent Price: ${product.get('price')}\n\nEnter the new price below:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
     
-    # 🟢 NEW: Smart Add Stock Instruction based on Category
     elif action == "stock":
         await state.set_state(EditProductState.waiting_for_stock)
         cat = product.get('category', 'vpn')
@@ -875,7 +875,6 @@ async def process_price_update(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     await message.answer(f"✅ Price updated successfully to ${new_price}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
     
-    # 🟢 UPDATED: Channel Post using AutoPost Setting
     is_autopost = await get_autopost_status()
     if MAIN_CHANNEL_ID and old_price != new_price and is_autopost:
         trend = "📉 <b>PRICE DROP!</b>" if new_price < old_price else "📈 <b>PRICE UPDATE</b>"
@@ -884,13 +883,11 @@ async def process_price_update(message: Message, state: FSMContext, bot: Bot):
         try: await bot.send_message(MAIN_CHANNEL_ID, channel_text, reply_markup=buy_btn, parse_mode="HTML")
         except: pass
 
-# 🟢 NEW: Process Both Document (.txt) and Text for Stock
 @router.message(EditProductState.waiting_for_stock)
 async def process_stock_update(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id): return
     
     raw_text = ""
-    # যদি .txt ফাইল দেয়
     if message.document:
         if not message.document.file_name.endswith('.txt'):
             return await message.answer("❌ Please upload a valid .txt file or send text.")
@@ -903,7 +900,6 @@ async def process_stock_update(message: Message, state: FSMContext, bot: Bot):
         return await message.answer("❌ Invalid input. Send text or a .txt file.")
         
     keys = raw_text.splitlines()
-    # ফাঁকা লাইন ইগনোর করার লজিক
     valid_keys = [k.strip() for k in keys if k.strip()]
     
     if not valid_keys: 
@@ -933,7 +929,6 @@ async def process_delete_product(callback: CallbackQuery, bot: Bot):
     
     await delete_product(prod_id)
     
-    # 🟢 UPDATED: Check AutoPost Setting before notifying channel
     is_autopost = await get_autopost_status()
     if MAIN_CHANNEL_ID and is_autopost:
         try: await bot.send_message(MAIN_CHANNEL_ID, f"⚠️ <b>STOCK OUT NOTICE</b>\n\n🚫 <b>{prod_name}</b> is currently out of stock or removed from our shop. Stay tuned for updates!", parse_mode="HTML")
@@ -1144,7 +1139,6 @@ async def ask_broadcast_destination(callback: CallbackQuery, state: FSMContext):
     await state.update_data(product_btn_id=prod_id)
     await state.set_state(BroadcastState.waiting_for_destination)
     
-    # 🟢 NEW: Where to send the broadcast?
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Users Only", callback_data="bc_dest|users", style="primary")],
         [InlineKeyboardButton(text="📢 Channel Only", callback_data="bc_dest|channel", style="primary")],
@@ -1167,7 +1161,6 @@ async def execute_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
     if prod_id != "none" and db:
         product = db.collection('products').document(prod_id).get().to_dict()
         if product:
-            # 🟢 FIX: Changed callback to buy_ to open the shop menu directly
             url_btn = InlineKeyboardButton(text=f"🛒 Buy {product['name']} - ${product['price']}", url=f"https://t.me/{BOT_USERNAME}?start=buy_{prod_id}")
             reply_markup = InlineKeyboardMarkup(inline_keyboard=[[url_btn]])
             
@@ -1177,14 +1170,12 @@ async def execute_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
     success_count = 0
     channel_sent = False
     
-    # Send to Channel
     if destination in ['channel', 'both'] and MAIN_CHANNEL_ID:
         try:
             await bot.copy_message(chat_id=MAIN_CHANNEL_ID, from_chat_id=from_chat_id, message_id=msg_id, reply_markup=reply_markup)
             channel_sent = True
         except Exception: pass
         
-    # Send to Users
     if destination in ['users', 'both']:
         users = [doc.id for doc in db.collection('users').stream()] if db else [str(callback.from_user.id)]
         for uid in users:
