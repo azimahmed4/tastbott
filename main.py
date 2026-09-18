@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramServerError, TelegramNetworkError
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton # 🟢 NEW: বাটনের জন্য ইমপোর্ট
 
-from config import BOT_TOKEN, MAIN_CHANNEL_ID, BOT_USERNAME
+from config import BOT_TOKEN, MAIN_GROUPS_ID, BOT_USERNAME
 from middlewares.force_join import ForceSubMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
 
@@ -33,7 +33,7 @@ async def simulated_sales_loop(bot: Bot):
         await asyncio.sleep(sleep_interval)
         
         try:
-            if not db or not MAIN_CHANNEL_ID:
+            if not db or not MAIN_GROUPS_ID:
                 continue
                 
             # ডাটাবেস থেকে সব প্রোডাক্ট নিয়ে আসা
