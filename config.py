@@ -10,6 +10,7 @@ REQUIRED_CHANNELS = ["@CRYPTOEVENT24", "@omni_sub", "@OmniSubCSupport"]
 # 🟢 NEW: অটোমেটিক চ্যানেল পোস্টের জন্য মেইন চ্যানেল আইডি (যেটাতে বট অ্যাডমিন থাকবে)
 # আপনি চাইলে এখানে @username অথবা চ্যানেলের আইডি (যেমন: -10012345678) দিতে পারেন।
 MAIN_CHANNEL_ID = "@omni_sub"
+MAIN_GROUPS_ID = "@OmniSubCSupport"
 
 # 🚀 মাল্টিপল অ্যাডমিন সিস্টেম (কমা দিয়ে একাধিক আইডি দেওয়া যাবে)
 admin_id_env = os.environ.get("ADMIN_IDS") # রেন্ডারে এনভায়রনমেন্ট ভেরিয়েবলের নাম দেবেন ADMIN_IDS
