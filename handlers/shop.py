@@ -178,11 +178,15 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     keyboard = []
     for i in range(0, len(current_products), 2):
         pid1, details1 = current_products[i]
-        row = [InlineKeyboardButton(text=f"{details1['name']}", callback_data=f"buy_{pid1}", style="primary")]
+        
+        # 🟢 NEW: Check status and apply danger style if paused
+        btn_style1 = "danger" if details1.get('status') == 'paused' else "primary"
+        row = [InlineKeyboardButton(text=f"{details1['name']}", callback_data=f"buy_{pid1}", style=btn_style1)]
         
         if i + 1 < len(current_products):
             pid2, details2 = current_products[i+1]
-            row.append(InlineKeyboardButton(text=f"{details2['name']}", callback_data=f"buy_{pid2}", style="primary"))
+            btn_style2 = "danger" if details2.get('status') == 'paused' else "primary"
+            row.append(InlineKeyboardButton(text=f"{details2['name']}", callback_data=f"buy_{pid2}", style=btn_style2))
         keyboard.append(row)
         
     nav_row = []
@@ -205,11 +209,25 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
 @router.callback_query(F.data.startswith("buy_"))
 async def start_buy(callback: CallbackQuery):
     prod_id = callback.data.split("_", 1)[1]
+    
+    # 🟢 NEW: Block purchase if product is paused (Out of Stock)
+    product = await get_product(prod_id)
+    if not product:
+        return await callback.answer("❌ Error: Product not found!", show_alert=True)
+    if product.get('status') == 'paused':
+        return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
+        
     await show_quantity_selector(callback, prod_id, 1)
     
 @router.callback_query(F.data.startswith("buyprod_"))
 async def buy_again_shortcut(callback: CallbackQuery):
     prod_id = callback.data.split("_")[1]
+    
+    # 🟢 NEW: Block purchase if product is paused
+    product = await get_product(prod_id)
+    if product and product.get('status') == 'paused':
+        return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
+        
     await show_quantity_selector(callback, prod_id, 1)
 
 @router.callback_query(F.data.startswith("setqty_"))
@@ -224,6 +242,10 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
     product = await get_product(prod_id)
     if not product:
         return await callback.answer("❌ Error: Product not found!", show_alert=True)
+        
+    # Safety Check inside selector as well
+    if product.get('status') == 'paused':
+        return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
     
     # 🟢 Fetch User Balance for "Wallet" display
     user_id = str(callback.from_user.id)
