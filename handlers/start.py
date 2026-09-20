@@ -9,6 +9,9 @@ from keyboards.inline_menus import get_main_menu
 from database.crud import db, add_user, get_user
 from config import REFERRAL_BONUS
 
+# 🟢 NEW: সরাসরি প্রোডাক্ট কেনার পেজ দেখানোর জন্য shop.py থেকে ফাংশন ইমপোর্ট
+from handlers.shop import show_quantity_selector
+
 router = Router()
 
 # 🚀 ফায়ারবেস ব্যবহার করে রেফারেল বোনাস দেওয়ার হেল্পার ফাংশন
@@ -43,32 +46,56 @@ async def handle_start(message: Message, command: CommandObject, state: FSMConte
     user_id = message.from_user.id
     username = message.from_user.username or ""
     first_name = message.from_user.first_name or "User"
-    args = command.args # ?start=123456
+    args = command.args # ?start=123456 OR ?start=buy_p12345
     
     # ফায়ারবেস থেকে চেক করা ইউজার আগে থেকে আছে কি না
     existing_user = await get_user(user_id)
     is_joined = await check_membership(message.bot, user_id)
 
-    # যদি নতুন ইউজার হয়
-    if not existing_user:
-        referrer_id = None
-        if args and args.isdigit():
+    # 🟢 NEW: Deep Link Payload Handling (Referral vs Buy Product)
+    buy_product_id = None
+    referrer_id = None
+    
+    if args:
+        if args.startswith("buy_"):
+            buy_product_id = args.split("_", 1)[1] # "buy_p12345" থেকে "p12345" বের করা
+        elif args.isdigit():
             ref_id = int(args)
             if ref_id != user_id:
                 referrer_id = ref_id
 
+    # যদি নতুন ইউজার হয়
+    if not existing_user:
         if is_joined:
             # যদি আগে থেকেই জয়েন থাকে, ফায়ারবেসে সেভ করো (ব্যালেন্স ০ হবে) এবং বোনাস দাও
             is_new = await add_user(user_id, username, first_name, referrer_id)
             if is_new and referrer_id:
                 await process_referral_reward(message.bot, user_id, referrer_id)
         else:
-            # জয়েন না থাকলে শুধু রেফারারের আইডি state-এ সেভ করে রাখো, Check Join-এ কাজ হবে
-            if referrer_id:
-                await state.update_data(referred_by=referrer_id)
+            # জয়েন না থাকলে শুধু রেফারারের আইডি ও প্রোডাক্ট আইডি state-এ সেভ করে রাখো
+            state_data = {}
+            if referrer_id: state_data["referred_by"] = referrer_id
+            if buy_product_id: state_data["buy_product_id"] = buy_product_id
+            if state_data: await state.update_data(**state_data)
 
     # যদি ইউজার সব চ্যানেলে জয়েন থাকে, তবেই মেইন মেনু দেখাবে
     if is_joined:
+        # 🟢 NEW: যদি ডিপ-লিংক এ buy_ID থাকে, তাহলে সরাসরি প্রোডাক্ট পেজ দেখাও
+        if buy_product_id:
+            # ফেক কলব্যাক তৈরি করে shop.py এর ফাংশনে পাঠানো হচ্ছে
+            fake_callback = CallbackQuery(id="0", from_user=message.from_user, chat_instance="0", message=message)
+            
+            # আগের মেসেজ ডিলিট করে নতুন মেনু আনার ট্রাই (ক্লিন ইউআই এর জন্য)
+            try: await message.delete()
+            except: pass
+            
+            # সরাসরি প্রোডাক্টের পেজ পাঠানো
+            sent_msg = await message.answer("⏳ Loading product details...")
+            fake_callback.message = sent_msg 
+            await show_quantity_selector(fake_callback, buy_product_id, 1)
+            await state.clear()
+            return
+            
         await state.clear() 
         welcome_text = f"Welcome to OmniSub Store ! 🚀\nHello {first_name}, please select an option below:"
         await message.answer(welcome_text, reply_markup=get_main_menu())
@@ -84,11 +111,10 @@ async def verify_join(callback: CallbackQuery, state: FSMContext, bot: Bot):
     
     if is_joined:
         existing_user = await get_user(user_id)
+        data = await state.get_data()
         
         # 🚀 যদি ইউজারের ফায়ারবেস প্রোফাইল না থাকে (অর্থাৎ সে একদম নতুন)
         if not existing_user:
-            # state থেকে পেন্ডিং রেফারারের আইডি বের করে আনা
-            data = await state.get_data()
             referrer_id = data.get("referred_by")
             
             # ফায়ারবেসে ইউজার সেভ করা (এখানেই ব্যালেন্স ০ হয়ে যাবে)
@@ -98,7 +124,15 @@ async def verify_join(callback: CallbackQuery, state: FSMContext, bot: Bot):
             if is_new and referrer_id:
                 await process_referral_reward(bot, user_id, referrer_id)
                 
+        # 🟢 NEW: নতুন ইউজার জয়েন করার পর যদি ডিপ-লিংক প্রোডাক্ট থাকে, সেটা দেখানো
+        buy_product_id = data.get("buy_product_id")
         await state.clear()
+        
+        if buy_product_id:
+            await callback.message.edit_text("⏳ Loading product details...")
+            await show_quantity_selector(callback, buy_product_id, 1)
+            return
+            
         welcome_text = f"Welcome to OmniSub Store! 🚀\nHello {first_name}, please select an option below:"
         await callback.message.edit_text(welcome_text, reply_markup=get_main_menu())
     else:
