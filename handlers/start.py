@@ -14,6 +14,19 @@ from handlers.shop import show_quantity_selector
 
 router = Router()
 
+# 🟢 FIXED: Aiogram 3 FrozenInstanceError এড়াতে কাস্টম FakeCallback ক্লাস তৈরি
+class FakeCallback:
+    def __init__(self, message: Message, user):
+        self.message = message
+        self.from_user = user
+        self.id = "0"
+        
+    async def answer(self, text=None, show_alert=False, **kwargs):
+        # যদি প্রোডাক্ট না থাকে বা Out of Stock থাকে, তবে মেসেজ এডিট করে এরর দেখাবে
+        if text:
+            try: await self.message.edit_text(text)
+            except: pass
+
 # 🚀 ফায়ারবেস ব্যবহার করে রেফারেল বোনাস দেওয়ার হেল্পার ফাংশন
 async def process_referral_reward(bot: Bot, user_id: int, referrer_id: int):
     # crud.py-এর add_user ফাংশনটি আগেই ইউজারের total_referrals বাড়িয়ে দিয়েছে।
@@ -82,16 +95,15 @@ async def handle_start(message: Message, command: CommandObject, state: FSMConte
     if is_joined:
         # 🟢 NEW: যদি ডিপ-লিংক এ buy_ID থাকে, তাহলে সরাসরি প্রোডাক্ট পেজ দেখাও
         if buy_product_id:
-            # ফেক কলব্যাক তৈরি করে shop.py এর ফাংশনে পাঠানো হচ্ছে
-            fake_callback = CallbackQuery(id="0", from_user=message.from_user, chat_instance="0", message=message)
-            
-            # আগের মেসেজ ডিলিট করে নতুন মেনু আনার ট্রাই (ক্লিন ইউআই এর জন্য)
             try: await message.delete()
             except: pass
             
             # সরাসরি প্রোডাক্টের পেজ পাঠানো
             sent_msg = await message.answer("⏳ Loading product details...")
-            fake_callback.message = sent_msg 
+            
+            # 🟢 FIXED: Aiogram 3 এর Frozen error এড়াতে কাস্টম FakeCallback
+            fake_callback = FakeCallback(sent_msg, message.from_user)
+            
             await show_quantity_selector(fake_callback, buy_product_id, 1)
             await state.clear()
             return
@@ -129,6 +141,7 @@ async def verify_join(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await state.clear()
         
         if buy_product_id:
+            # 🟢 FIXED: Check Join এর ক্ষেত্রে অরিজিনাল কলব্যাকই কাজ করবে
             await callback.message.edit_text("⏳ Loading product details...")
             await show_quantity_selector(callback, buy_product_id, 1)
             return
