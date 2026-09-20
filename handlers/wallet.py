@@ -116,10 +116,10 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         
         if m_key == "binance":
             pay_id = method_info.get("pay_id", "Unknown")
-            instruction = (f"⚡ <b>{method_name} (Auto Verification)</b>\n\n🔹 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n⚠️ <i>Please send USDT to the Pay ID above. After sending, type your <b>Order ID or Transaction ID (TrxID)</b> below:</i>")
+            instruction = (f"⚡ <b>{method_name} (Auto Verification)</b>\n\n📲 <b>Pay ID / UID:</b> <code>{pay_id}</code>\n\n⚠️ <i>Please send USDT to the Pay ID above. After sending, type your <b>Order ID or Transaction ID (TrxID)</b> below:</i>")
         elif m_key == "bybit":
             pay_id = method_info.get("pay_id", "Unknown")
-            instruction = (f"⚡ <b>{method_name} (Auto Verification)</b>\n\n🔹 <b>UID:</b> <code>{pay_id}</code>\n\n⚠️ <i>Please send USDT via <b>'Withdraw -> Internal Transfer'</b> to the UID above. After sending, type your <b>Transaction ID (txID)</b> below:</i>")
+            instruction = (f"⚡ <b>{method_name} (Auto Verification)</b>\n\n📲 <b>UID:</b> <code>{pay_id}</code>\n\n⚠️ <i>Please send USDT via <b>'Withdraw -> Internal Transfer'</b> to the UID above. After sending, type your <b>Transaction ID (txID)</b> below:</i>")
         elif m_key == "bybitaddress":
             address = method_info.get("address", "Unknown")
             instruction = (f"⚡ <b>{method_name} (Auto Verification)</b>\n\n🔹 <b>Supported Networks:</b> BEP20 (BSC)\n🔹 <b>Deposit Address:</b> <code>{address}</code>\n\n⚠️ <i>Please send USDT to the address above. Wait 1-2 minutes for network confirmation, then type your <b>Transaction Hash (TxID)</b> below:</i>")
@@ -131,7 +131,7 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         await state.update_data(payment_method=method_name, method_key=m_key, method_type="local")
         await state.set_state(DepositState.waiting_for_amount)
         
-        instruction = (f"📱 <b>{method_name} (Auto Verification)</b>\n\n🔹 <b>Minimum Deposit:</b> 20 BDT\n\n⚠️ <b>How much money do you want to deposit?</b>\n<i>(Type the amount in BDT below. Example: 100)</i>")
+        instruction = (f"📱 <b>{method_name} (Auto Verification)</b>\n\n💰 <b>Minimum Deposit:</b> 20 BDT\n\n⚠️ <b>How much money do you want to deposit?</b>\n<i>(Type the amount in BDT below. Example: 100)</i>")
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
         await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
 
