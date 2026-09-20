@@ -3,7 +3,8 @@ import asyncio
 import random
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramServerError, TelegramNetworkError
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton # 🟢 NEW: বাটনের জন্য ইমপোর্ট
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton 
+from firebase_admin import firestore # 🟢 NEW: রিয়েল সেলস ডেটা আনার জন্য
 
 from config import BOT_TOKEN, MAIN_GROUPS_ID, BOT_USERNAME
 from middlewares.force_join import ForceSubMiddleware
@@ -21,59 +22,107 @@ from handlers.profile import router as profile_router
 from handlers.others import router as others_router 
 
 # ==========================================
-# 🟢 NEW: Simulated Sales Loop (FOMO Marketing)
+# 🟢 হেল্পার ফাংশন: ফেক সেল মেসেজ (কোয়ান্টিটি সহ)
+# ==========================================
+async def send_fake_sale_message(bot: Bot, product: dict):
+    product_name = product.get('name', 'Premium Service')
+    product_id = product.get('product_id', '') 
+    
+    # র‍্যান্ডম ফেক ইউজার আইডি তৈরি (e.g., 105***78)
+    fake_user_id = f"{random.randint(100, 999)}***{random.randint(10, 99)}"
+    
+    # 🟢 NEW: র‍্যান্ডম কোয়ান্টিটি (বেশিরভাগ সময় 1, মাঝে মাঝে 2, 3 বা 5)
+    fake_qty = random.choices([1, 2, 3, 5], weights=[75, 15, 7, 3])[0]
+    
+    promo_text = (
+        f"🎉 <b>New Order Placed!</b>\n\n"
+        f"👤 User <code>{fake_user_id}</code> just purchased:\n"
+        f"🛍️ <b>{product_name}</b>\n"
+        f"🔢 <b>Quantity:</b> {fake_qty}\n\n"
+        f"⚡️ <i>Delivered automatically in seconds.</i>"
+    )
+    
+    buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
+    buy_btn = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]
+    ])
+    
+    try:
+        await bot.send_message(
+            chat_id=MAIN_GROUPS_ID,
+            text=promo_text,
+            parse_mode="HTML",
+            reply_markup=buy_btn
+        )
+    except Exception:
+        pass
+
+# ==========================================
+# 🟢 NEW: Simulated Sales Loop (Real Trending Burst Mode)
 # ==========================================
 async def simulated_sales_loop(bot: Bot):
     print("🚀 Simulated Sales Loop Started...")
-    await asyncio.sleep(60) # বট চালুর 1 মিনিট পর থেকে হিসাব শুরু
+    await asyncio.sleep(60) 
     
     while True:
-        # 30 মিনিট (1800 সেকেন্ড) থেকে 60 মিনিট (3600 সেকেন্ড) এর মধ্যে র‍্যান্ডম সময়
-        sleep_interval = random.randint(1800, 3600) 
-        await asyncio.sleep(sleep_interval)
-        
         try:
             if not db or not MAIN_GROUPS_ID:
+                await asyncio.sleep(60)
                 continue
                 
-            # ডাটাবেস থেকে সব প্রোডাক্ট নিয়ে আসা
+            # ডাটাবেস থেকে অ্যাক্টিভ প্রোডাক্ট নিয়ে আসা
             docs = db.collection('products').stream()
-            products = [doc.to_dict() for doc in docs]
+            active_products = [doc.to_dict() for doc in docs if doc.to_dict().get('status', 'active') == 'active']
             
-            if not products:
+            if not active_products:
+                await asyncio.sleep(600) 
                 continue
                 
-            # একটি র‍্যান্ডম প্রোডাক্ট বেছে নেওয়া
-            random_product = random.choice(products)
-            product_name = random_product.get('name', 'Premium Service')
-            product_id = random_product.get('product_id', '') # প্রোডাক্ট আইডি
+            # 🟢 15% চান্স থাকবে Burst (ঝড়) ট্রিগার হওয়ার
+            is_burst_mode = random.random() < 0.15 
             
-            # র‍্যান্ডম ফেক ইউজার আইডি তৈরি (e.g., 105***78)
-            fake_user_id = f"{random.randint(100, 999)}***{random.randint(10, 99)}"
-            
-            # গ্রুপে পাঠানোর জন্য সুন্দর মেসেজ (ইউজারনেম টেক্সট রিমুভ করা হয়েছে)
-            promo_text = (
-                f"🎉 <b>New Order Placed!</b>\n\n"
-                f"👤 User <code>{fake_user_id}</code> just purchased:\n"
-                f"🛍️ <b>{product_name}</b>\n\n"
-                f"⚡️ <i>Delivered automatically in seconds.</i>"
-            )
-            
-            # 🟢 NEW: Buy Now Button (সরাসরি ওই প্রোডাক্ট কেনার লিংক)
-            buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
-            buy_btn = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]
-            ])
-            
-            # গ্রুপে মেসেজ সেন্ড করা
-            await bot.send_message(
-                chat_id=MAIN_GROUPS_ID,
-                text=promo_text,
-                parse_mode="HTML",
-                reply_markup=buy_btn
-            )
+            if is_burst_mode:
+                burst_product = None
+                try:
+                    # 🟢 NEW: ডাটাবেস থেকে লাস্ট রিয়েল অর্ডারগুলো চেক করা
+                    recent_docs = db.collection('orders').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(5).stream()
+                    recent_products = []
+                    for doc in recent_docs:
+                        d = doc.to_dict()
+                        if d.get('product_id'):
+                            recent_products.append({'product_id': d['product_id'], 'name': d.get('product_name')})
+                    
+                    if recent_products:
+                        burst_product = random.choice(recent_products) # রিয়েল সেল হওয়া প্রোডাক্ট সিলেক্ট করা
+                except Exception:
+                    pass
+                
+                # যদি কোনো রিয়েল সেল না পাওয়া যায়, তখন র‍্যান্ডম প্রোডাক্ট নেবে
+                if not burst_product:
+                    burst_product = random.choice(active_products)
+                    
+                burst_count = random.randint(4, 7)
+                print(f"🔥 REAL TRENDING BURST! {burst_count} fake sales for {burst_product.get('name')}")
+                
+                for _ in range(burst_count):
+                    await send_fake_sale_message(bot, burst_product)
+                    # প্রতিটা বার্স্ট মেসেজের মাঝে ৩০ সেকেন্ড থেকে ২ মিনিটের গ্যাপ
+                    await asyncio.sleep(random.randint(30, 120))
+                
+                # বার্স্ট শেষ হওয়ার পর গ্রুপকে রেস্ট দেওয়ার জন্য বড় গ্যাপ
+                await asyncio.sleep(random.randint(1800, 3600))
+                
+            else:
+                # 🚶‍♂️ Normal Mode: একটা র‍্যান্ডম প্রোডাক্ট
+                random_product = random.choice(active_products)
+                await send_fake_sale_message(bot, random_product)
+                
+                # নরমাল বিরতি (৩০ মিনিট থেকে ৬০ মিনিটের মধ্যে)
+                await asyncio.sleep(random.randint(1800, 3600))
+                
         except Exception as e:
-            pass
+            print(f"Simulated Loop Error: {e}")
+            await asyncio.sleep(60)
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
