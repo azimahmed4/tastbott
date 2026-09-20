@@ -51,10 +51,10 @@ else:
 # ==========================================
 class DepositState(StatesGroup):
     waiting_for_amount = State()         
-    waiting_for_sender = State()
+    # 🟢 REMOVED: waiting_for_sender State রিমুভ করা হয়েছে
     waiting_for_trxid = State()          
     waiting_for_crypto_trxid = State()   
-    waiting_for_screenshot = State()     # 🟢 NEW: স্ক্রিনশট নেওয়ার জন্য নতুন স্টেট
+    waiting_for_screenshot = State()     
     payment_method = None  
     method_key = None      
     method_type = None     
@@ -238,27 +238,17 @@ async def receive_amount(message: Message, state: FSMContext):
     if amount < 20: return await message.answer("⚠️ <b>Minimum deposit amount is 20 BDT.</b>\n\nPlease enter an amount of 20 or more:", parse_mode="HTML")
         
     await state.update_data(deposit_amount=amount)
-    await state.set_state(DepositState.waiting_for_sender) 
     
-    data = await state.get_data()
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
-    await message.answer(f"📱 <b>Which account will you Send from?</b>\n<i>(Type your 11-digit {data.get('payment_method')} number below)</i>", reply_markup=keyboard, parse_mode="HTML")
-
-@router.message(DepositState.waiting_for_sender)
-async def receive_sender(message: Message, state: FSMContext):
-    sender_num = message.text.strip()
-    if not sender_num.isdigit() or len(sender_num) != 11:
-        return await message.answer("⚠️ <b>Invalid Number!</b>\n\nPlease enter exactly 11 digits for your sender number (e.g., 01311111111):", parse_mode="HTML")
-        
-    await state.update_data(sender_number=sender_num)
+    # 🟢 NEW: সরাসরি TrxID চাইবে, Sender Number স্কিপ করা হলো!
     await state.set_state(DepositState.waiting_for_trxid) 
     
     data = await state.get_data()
     methods = await get_all_payment_methods()
     admin_receiving_number = methods.get(data.get("method_key", "bkash"), {}).get("number", "Unknown")
     
-    instruction = (f"📱 <b>Payment Instructions</b>\n\n🔹 <b>Method:</b> {data.get('payment_method')}\n🔹 <b>Amount to send:</b> {data.get('deposit_amount')} BDT\n🔹 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n⚠️ <i>After sending, type your <b>Transaction ID (TrxID)</b> below:</i>")
-    await message.answer(instruction, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]]), parse_mode="HTML")
+    instruction = (f"📱 <b>Payment Instructions</b>\n\n🔹 <b>Method:</b> {data.get('payment_method')}\n🔹 <b>Amount to send:</b> {data.get('deposit_amount')} BDT\n🔹 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n⚠️ <i>After sending money, type your <b>Transaction ID (TrxID)</b> below:</i>")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
+    await message.answer(instruction, reply_markup=keyboard, parse_mode="HTML")
 
 @router.message(DepositState.waiting_for_trxid)
 async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
@@ -266,12 +256,10 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     processing_msg = await message.answer("⏳ <b>Processing your request...</b>\nPlease wait a moment.", parse_mode="HTML")
     
-    # 🟢 NEW: Length & Format Spam Check
     if len(trxid) < 6 or not trxid.isalnum():
         return await processing_msg.edit_text("⚠️ <b>Invalid TrxID Format!</b>\nPlease provide a valid alphanumeric Transaction ID.", parse_mode="HTML")
     
     if db:
-        # 🟢 NEW: FieldFilter fixed for Firestore
         existing_deposits = db.collection('pending_deposits').where(filter=FieldFilter('trx_id', '==', trxid)).limit(1).stream()
         for _ in existing_deposits:
             return await processing_msg.edit_text("❌ <b>Alert:</b> This Transaction ID has already been submitted in our system!\n\n<i>If you think this is a mistake, please contact support.</i>", parse_mode="HTML")
@@ -284,11 +272,12 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     expected_amount = user_data.get("deposit_amount", 0.0) 
     
     is_auto_verified = False
+    actual_amount = 0.0 # 🟢 NEW: ডাটাবেস থেকে আসল অ্যামাউন্ট নেওয়ার জন্য
     
-    # 🟢 1ST ATTEMPT: Instant Check
+    # 🟢 1ST ATTEMPT: Instant Check (ইউজারের অ্যামাউন্ট ইগনোর করে আসল অ্যামাউন্ট নেবে)
     if db:
         sms_doc = db.collection('live_sms_payments').document(trxid).get()
-        if sms_doc.exists and not sms_doc.to_dict().get('is_used', False) and float(sms_doc.to_dict().get('amount', 0.0)) >= expected_amount:
+        if sms_doc.exists and not sms_doc.to_dict().get('is_used', False):
             is_auto_verified = True
             actual_amount = float(sms_doc.to_dict().get('amount', 0.0))
 
@@ -299,7 +288,7 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
         
         if db:
             sms_doc = db.collection('live_sms_payments').document(trxid).get()
-            if sms_doc.exists and not sms_doc.to_dict().get('is_used', False) and float(sms_doc.to_dict().get('amount', 0.0)) >= expected_amount:
+            if sms_doc.exists and not sms_doc.to_dict().get('is_used', False):
                 is_auto_verified = True
                 actual_amount = float(sms_doc.to_dict().get('amount', 0.0))
 
@@ -310,7 +299,12 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
         await save_deposit_history(user_id=user_id, amount=actual_amount, method=method_name, trx_id=trxid, currency="BDT")
         db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
         
+        # 🟢 মেসেজে আসল অ্যামাউন্ট শো করানো হচ্ছে
         success_text = (f"🎉 <b>{method_name} Verified Successfully!</b>\n\n🧾 <b>TrxID:</b> <code>{trxid}</code>\n💰 <b>Received:</b> {actual_amount} BDT\n💎 <b>Added:</b> ${amount_usd}\n\n<i>Your balance has been updated instantly.</i>")
+        
+        if actual_amount != expected_amount:
+            success_text += f"\n\n⚠️ <i>Note: You claimed {expected_amount} BDT, but we received {actual_amount} BDT. Your balance is updated with the actual received amount.</i>"
+            
         await processing_msg.edit_text(success_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Go to Shop", callback_data="menu_buy", style="success", icon_custom_emoji_id=EMOJI_CART)]]), parse_mode="HTML")
         
         for admin_id in ADMIN_IDS:
@@ -339,21 +333,22 @@ async def receive_screenshot(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     data = await state.get_data()
     
-    method_name, sender_number, trxid = data.get("payment_method"), data.get("sender_number"), data.get("fallback_trxid")
+    method_name, trxid = data.get("payment_method"), data.get("fallback_trxid")
     expected_amount = data.get("deposit_amount", 0.0)
     
     # Extract highest quality photo
     photo_id = message.photo[-1].file_id if message.photo else message.document.file_id
     
-    deposit_id = await create_pending_deposit(user_id=user_id, amount=expected_amount, method=method_name, sender_number=sender_number, trx_id=trxid)
+    # 🟢 NEW: sender_number হিসেবে "N/A" পাঠানো হচ্ছে
+    deposit_id = await create_pending_deposit(user_id=user_id, amount=expected_amount, method=method_name, sender_number="N/A", trx_id=trxid)
 
     admin_text = (
         "💰 <b>NEW DEPOSIT REQUEST! (Manual Fallback)</b>\n\n"
         f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
         f"🏦 <b>Method:</b> {method_name}\n"
-        f"📱 <b>Sender:</b> <code>{sender_number}</code>\n"
-        f"💵 <b>Amount:</b> {expected_amount} BDT\n"
-        f"🧾 <b>TrxID:</b> <code>{trxid}</code>"
+        f"💵 <b>Claimed Amount:</b> {expected_amount} BDT\n"
+        f"🧾 <b>TrxID:</b> <code>{trxid}</code>\n\n"
+        "📸 <i>Review the screenshot below.</i>"
     )
     admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔍 Verify Now", callback_data=f"viewdep_{deposit_id}", style="success", icon_custom_emoji_id=EMOJI_DONE)]])
     
