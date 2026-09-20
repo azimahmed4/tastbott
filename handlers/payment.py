@@ -43,14 +43,14 @@ def format_delivery_text(category: str, raw_data: str) -> str:
         # Subscription বা অন্য যেকোনো ফরম্যাটের জন্য ডিফল্ট
         return f"🔗 <b>Link/Key:</b> <code>{raw_data}</code>"
 
-# 🟢 NEW: রিয়েল সেলস অ্যালার্ট পাঠানোর ফাংশন
-async def send_real_sales_alert(bot: Bot, product_id: str, product_name: str, user_id: int):
+# 🟢 NEW: রিয়েল সেলস অ্যালার্টে Quantity যুক্ত করা হলো
+async def send_real_sales_alert(bot: Bot, product_id: str, product_name: str, user_id: int, qty: int):
     """রিয়েল টাইম সেলস অ্যালার্ট গ্রুপে পাঠানোর ফাংশন"""
     if not MAIN_GROUPS_ID:
         return
         
     try:
-        # ইউজারের আইডি মাস্ক করা (e.g., 105***78)
+        # ইউজারের আইডি মাস্ক করা
         str_uid = str(user_id)
         if len(str_uid) > 4:
             masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}"
@@ -60,7 +60,8 @@ async def send_real_sales_alert(bot: Bot, product_id: str, product_name: str, us
         promo_text = (
             f"🎉 <b>New Order Placed!</b>\n\n"
             f"👤 User <code>{masked_uid}</code> just purchased:\n"
-            f"🛍️ <b>{product_name}</b>\n\n"
+            f"🛍️ <b>{product_name}</b>\n"
+            f"🔢 <b>Quantity:</b> {qty}\n\n"
             f"⚡️ <i>Delivered automatically in seconds.</i>"
         )
         
