@@ -246,12 +246,12 @@ async def receive_amount(message: Message, state: FSMContext):
     methods = await get_all_payment_methods()
     admin_receiving_number = methods.get(data.get("method_key", "bkash"), {}).get("number", "Unknown")
     
-    instruction = (f"📱 <b>Payment Instructions</b>\n\n🔹 <b>Method:</b> {data.get('payment_method')}\n🔹 <b>Amount to send:</b> {data.get('deposit_amount')} BDT\n🔹 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n⚠️ <i>After sending money, type your <b>Transaction ID (TrxID)</b> below:</i>")
+    instruction = (f"📱 <b>Payment Instructions</b>\n\n🏦 <b>Method:</b> {data.get('payment_method')}\n💰 <b>Amount to send:</b> {data.get('deposit_amount')} BDT\n📲 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n⚠️ <i>After sending money, type your <b>Transaction ID (TrxID)</b> below:</i>")
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
     await message.answer(instruction, reply_markup=keyboard, parse_mode="HTML")
 
 @router.message(DepositState.waiting_for_trxid)
-async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
+async def receive_trxid(message: Message, state: FSMContext, bot: Bot): 
     trxid = message.text.strip()
     user_id = message.from_user.id
     processing_msg = await message.answer("⏳ <b>Processing your request...</b>\nPlease wait a moment.", parse_mode="HTML")
