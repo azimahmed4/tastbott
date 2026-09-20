@@ -494,7 +494,7 @@ async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
     await callback.message.answer(msg_text, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# 💰 Deposit Approvals
+# 💰 Deposit Approvals (FIXED SCREENSHOT & RESTART ISSUES)
 # ==========================================
 @router.callback_query(F.data == "admin_deposits")
 async def show_pending_deposits(callback: CallbackQuery):
@@ -508,7 +508,20 @@ async def show_pending_deposits(callback: CallbackQuery):
     if not keyboard:
         return await callback.answer("✅ No pending deposits right now!", show_alert=True)
     keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
-    await callback.message.edit_text("⏳ <b>Pending Deposits:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+    
+    text = "⏳ <b>Pending Deposits:</b>"
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    # 🟢 FIXED: ছবি থেকে লিস্টে ব্যাক করার সময় এরর এড়াতে
+    try:
+        if callback.message.photo or callback.message.document:
+            await callback.message.delete()
+            await callback.message.answer(text, reply_markup=markup, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer(text, reply_markup=markup, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("viewdep_"))
 async def view_single_deposit(callback: CallbackQuery):
@@ -527,7 +540,7 @@ async def view_single_deposit(callback: CallbackQuery):
         f"🔍 <b>Deposit Request</b>\n\n"
         f"👤 <b>User ID:</b> <code>{data.get('user_id')}</code>\n"
         f"🏦 <b>Method:</b> {data.get('method')}\n"
-        f"📱 <b>Sender:</b> <code>{data.get('sender_number')}</code>\n"
+        f"📱 <b>Sender:</b> <code>{data.get('sender_number', 'N/A')}</code>\n"
         f"💵 <b>Amount:</b> {amount_bdt} BDT (~${amount_usd})\n"
         f"🧾 <b>TrxID:</b> <code>{data.get('trx_id')}</code>\n"
     )
@@ -535,9 +548,17 @@ async def view_single_deposit(callback: CallbackQuery):
         [InlineKeyboardButton(text="✅ Approve", callback_data=f"appdep_{trxid}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"rejdep_{trxid}", style="danger")],
         [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_deposits", style="primary")]
     ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    # 🟢 FIXED: ছবি থাকলে edit_caption, আর টেক্সট থাকলে edit_text ব্যবহার করবে
+    try:
+        if callback.message.photo or callback.message.document:
+            await callback.message.edit_caption(caption=text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🟢 FIXED: Separated callback queries for better reliability
 @router.callback_query(F.data.startswith("appdep_"))
 async def approve_deposit(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -545,9 +566,15 @@ async def approve_deposit(callback: CallbackQuery, bot: Bot):
     if not db: return
     doc_ref = db.collection('pending_deposits').document(trxid)
     doc = doc_ref.get()
+    
+    # মেইন অ্যাডমিন প্যানেল লোড করার ফাংশন
+    menu = await get_admin_menu()
+    admin_text = "👨‍💻 <b>Admin Control Panel</b>\n\nSelect an action below:"
+    
     if not doc.exists or doc.to_dict().get('status') != 'pending':
         await callback.answer("❌ Already processed.", show_alert=True)
-        return await callback.message.delete()
+        await callback.message.delete()
+        return await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
         
     data = doc.to_dict()
     user_id = data.get('user_id')
@@ -560,8 +587,12 @@ async def approve_deposit(callback: CallbackQuery, bot: Bot):
     await save_deposit_history(user_id=user_id, amount=amount_bdt, method=method_name, trx_id=trxid, currency="BDT")
     try: await bot.send_message(user_id, f"🎉 <b>Deposit Approved!</b>\n<b>${amount_usd}</b> added to your wallet.", parse_mode="HTML")
     except: pass
+    
     await callback.answer("✅ Deposit Approved!", show_alert=True)
-    await callback.message.delete()
+    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
+    
+    # 🟢 NEW: মেসেজ গায়েব হওয়ার পর মেইন প্যানেল নিয়ে আসা
+    await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("rejdep_"))
 async def reject_deposit(callback: CallbackQuery, bot: Bot):
@@ -570,9 +601,15 @@ async def reject_deposit(callback: CallbackQuery, bot: Bot):
     if not db: return
     doc_ref = db.collection('pending_deposits').document(trxid)
     doc = doc_ref.get()
+    
+    # মেইন অ্যাডমিন প্যানেল লোড করার ফাংশন
+    menu = await get_admin_menu()
+    admin_text = "👨‍💻 <b>Admin Control Panel</b>\n\nSelect an action below:"
+    
     if not doc.exists or doc.to_dict().get('status') != 'pending':
         await callback.answer("❌ Already processed.", show_alert=True)
-        return await callback.message.delete()
+        await callback.message.delete()
+        return await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
         
     data = doc.to_dict()
     user_id = data.get('user_id')
@@ -581,8 +618,12 @@ async def reject_deposit(callback: CallbackQuery, bot: Bot):
     doc_ref.update({'status': 'rejected'})
     try: await bot.send_message(user_id, f"❌ <b>Deposit Rejected!</b>\nYour request for {amount_bdt} BDT was rejected.", parse_mode="HTML")
     except: pass
+    
     await callback.answer("❌ Deposit Rejected!", show_alert=True)
-    await callback.message.delete()
+    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
+    
+    # 🟢 NEW: মেসেজ গায়েব হওয়ার পর মেইন প্যানেল নিয়ে আসা
+    await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
 
 # ==========================================
 # 📦 Loop Manual Delivery System
