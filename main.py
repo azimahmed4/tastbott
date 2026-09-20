@@ -4,13 +4,14 @@ import random
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramServerError, TelegramNetworkError
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton 
-from firebase_admin import firestore # 🟢 NEW: রিয়েল সেলস ডেটা আনার জন্য
+from firebase_admin import firestore
 
 from config import BOT_TOKEN, MAIN_GROUPS_ID, BOT_USERNAME
 from middlewares.force_join import ForceSubMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
 
-from database.crud import db 
+# 🟢 FIXED: get_bot_status ইমপোর্ট করা হলো মেইনটেনেন্স চেক করার জন্য
+from database.crud import db, get_bot_status 
 
 # সবগুলো রাউটার ইমপোর্ট করা হচ্ছে
 from handlers.start import router as start_router
@@ -31,7 +32,7 @@ async def send_fake_sale_message(bot: Bot, product: dict):
     # র‍্যান্ডম ফেক ইউজার আইডি তৈরি (e.g., 105***78)
     fake_user_id = f"{random.randint(100, 999)}***{random.randint(10, 99)}"
     
-    # 🟢 NEW: র‍্যান্ডম কোয়ান্টিটি (বেশিরভাগ সময় 1, মাঝে মাঝে 2, 3 বা 5)
+    # র‍্যান্ডম কোয়ান্টিটি (বেশিরভাগ সময় 1, মাঝে মাঝে 2, 3 বা 5)
     fake_qty = random.choices([1, 2, 3, 5], weights=[75, 15, 7, 3])[0]
     
     promo_text = (
@@ -58,7 +59,7 @@ async def send_fake_sale_message(bot: Bot, product: dict):
         pass
 
 # ==========================================
-# 🟢 NEW: Simulated Sales Loop (Real Trending Burst Mode)
+# 🟢 NEW: Simulated Sales Loop (Real Trending Burst Mode & Maintenance Check)
 # ==========================================
 async def simulated_sales_loop(bot: Bot):
     print("🚀 Simulated Sales Loop Started...")
@@ -66,6 +67,13 @@ async def simulated_sales_loop(bot: Bot):
     
     while True:
         try:
+            # 🟢 FIXED: মেইনটেনেন্স মোড চেক করা
+            is_maintenance = await get_bot_status()
+            if is_maintenance:
+                # বট মেইনটেনেন্সে থাকলে ফেক সেল বন্ধ থাকবে, ১ মিনিট পর আবার চেক করবে
+                await asyncio.sleep(60)
+                continue
+
             if not db or not MAIN_GROUPS_ID:
                 await asyncio.sleep(60)
                 continue
@@ -78,13 +86,13 @@ async def simulated_sales_loop(bot: Bot):
                 await asyncio.sleep(600) 
                 continue
                 
-            # 🟢 15% চান্স থাকবে Burst (ঝড়) ট্রিগার হওয়ার
+            # 15% চান্স থাকবে Burst (ঝড়) ট্রিগার হওয়ার
             is_burst_mode = random.random() < 0.15 
             
             if is_burst_mode:
                 burst_product = None
                 try:
-                    # 🟢 NEW: ডাটাবেস থেকে লাস্ট রিয়েল অর্ডারগুলো চেক করা
+                    # ডাটাবেস থেকে লাস্ট রিয়েল অর্ডারগুলো চেক করা
                     recent_docs = db.collection('orders').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(5).stream()
                     recent_products = []
                     for doc in recent_docs:
@@ -93,7 +101,7 @@ async def simulated_sales_loop(bot: Bot):
                             recent_products.append({'product_id': d['product_id'], 'name': d.get('product_name')})
                     
                     if recent_products:
-                        burst_product = random.choice(recent_products) # রিয়েল সেল হওয়া প্রোডাক্ট সিলেক্ট করা
+                        burst_product = random.choice(recent_products) 
                 except Exception:
                     pass
                 
@@ -105,19 +113,19 @@ async def simulated_sales_loop(bot: Bot):
                 print(f"🔥 REAL TRENDING BURST! {burst_count} fake sales for {burst_product.get('name')}")
                 
                 for _ in range(burst_count):
+                    # 🟢 Safety Check: বার্স্ট চলাকালীন যদি হঠাৎ মেইনটেনেন্স অন করা হয়!
+                    if await get_bot_status():
+                        break 
+
                     await send_fake_sale_message(bot, burst_product)
-                    # প্রতিটা বার্স্ট মেসেজের মাঝে ৩০ সেকেন্ড থেকে ২ মিনিটের গ্যাপ
                     await asyncio.sleep(random.randint(30, 120))
                 
-                # বার্স্ট শেষ হওয়ার পর গ্রুপকে রেস্ট দেওয়ার জন্য বড় গ্যাপ
                 await asyncio.sleep(random.randint(1800, 3600))
                 
             else:
-                # 🚶‍♂️ Normal Mode: একটা র‍্যান্ডম প্রোডাক্ট
+                # 🚶‍♂️ Normal Mode
                 random_product = random.choice(active_products)
                 await send_fake_sale_message(bot, random_product)
-                
-                # নরমাল বিরতি (৩০ মিনিট থেকে ৬০ মিনিটের মধ্যে)
                 await asyncio.sleep(random.randint(1800, 3600))
                 
         except Exception as e:
@@ -146,7 +154,7 @@ async def main():
     print("✅ বট সফলভাবে চালু হয়েছে!")
     print("🛡️ Server Crash Protection Activated.")
 
-    # 🟢 NEW: ফেক সেলস ব্যাকগ্রাউন্ড লুপ চালু করা
+    # ফেক সেলস ব্যাকগ্রাউন্ড লুপ চালু করা
     asyncio.create_task(simulated_sales_loop(bot))
 
     while True:
