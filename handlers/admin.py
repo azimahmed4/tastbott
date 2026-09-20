@@ -719,7 +719,8 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
                 promo_text = (
                     f"🎉 <b>New Order Placed!</b>\n\n"
                     f"👤 User <code>{masked_uid}</code> just purchased:\n"
-                    f"🛍️ <b>{product_name}</b>\n\n"
+                    f"🛍️ <b>{product_name}</b>\n"
+                    f"🔢 <b>Quantity:</b> {total_qty}\n\n"
                     f"⚡️ <i>Delivered securely by Admin.</i>"
                 )
                 
