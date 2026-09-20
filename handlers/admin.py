@@ -12,7 +12,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
 
-# 🟢 NEW: MAIN_GROUPS_ID ইমপোর্ট করা হলো রিয়েল সেলস অ্যালার্টের জন্য
 from config import ADMIN_IDS, MAIN_CHANNEL_ID, MAIN_GROUPS_ID, BOT_USERNAME
 from database.crud import (db, get_product, delete_product, add_subcategory, get_subcategories, 
                            delete_subcategory, get_products_by_category, save_deposit_history, 
@@ -486,7 +485,8 @@ async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
     msg_text = f"🔥 <b>Available {cat_display} Packages</b> 🔥\n\n"
     
     for pid, details in products_dict.items():
-        msg_text += f"✅ {details['name']} ➔ <b>${details['price']}</b>\n"
+        if details.get('status', 'active') == 'active': # 🟢 Only show active products in list
+            msg_text += f"✅ {details['name']} ➔ <b>${details['price']}</b>\n"
         
     msg_text += f"\n🛒 <i>Order now from our bot! @{BOT_USERNAME}</i>"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Admin Panel", callback_data="back_to_admin", style="danger")]])
@@ -537,17 +537,17 @@ async def view_single_deposit(callback: CallbackQuery):
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-@router.callback_query(F.data.startswith("appdep_") | F.data.startswith("rejdep_"))
-async def process_deposit(callback: CallbackQuery, bot: Bot):
+# 🟢 FIXED: Separated callback queries for better reliability
+@router.callback_query(F.data.startswith("appdep_"))
+async def approve_deposit(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
-    action, trxid = callback.data.split("_")
+    trxid = callback.data.split("_")[1]
     if not db: return
     doc_ref = db.collection('pending_deposits').document(trxid)
     doc = doc_ref.get()
     if not doc.exists or doc.to_dict().get('status') != 'pending':
         await callback.answer("❌ Already processed.", show_alert=True)
-        await callback.message.delete()
-        return
+        return await callback.message.delete()
         
     data = doc.to_dict()
     user_id = data.get('user_id')
@@ -555,18 +555,33 @@ async def process_deposit(callback: CallbackQuery, bot: Bot):
     method_name = data.get('method', 'Local Payment')
     amount_usd = round(amount_bdt / 125.0, 2)
     
-    if action == "appdep":
-        db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
-        doc_ref.update({'status': 'approved'})
-        await save_deposit_history(user_id=user_id, amount=amount_bdt, method=method_name, trx_id=trxid, currency="BDT")
-        try: await bot.send_message(user_id, f"🎉 <b>Deposit Approved!</b>\n<b>${amount_usd}</b> added to your wallet.", parse_mode="HTML")
-        except: pass
-        await callback.answer("✅ Deposit Approved!", show_alert=True)
-    else:
-        doc_ref.update({'status': 'rejected'})
-        try: await bot.send_message(user_id, f"❌ <b>Deposit Rejected!</b>\nYour request for {amount_bdt} BDT was rejected.", parse_mode="HTML")
-        except: pass
-        await callback.answer("❌ Deposit Rejected!", show_alert=True)
+    db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
+    doc_ref.update({'status': 'approved'})
+    await save_deposit_history(user_id=user_id, amount=amount_bdt, method=method_name, trx_id=trxid, currency="BDT")
+    try: await bot.send_message(user_id, f"🎉 <b>Deposit Approved!</b>\n<b>${amount_usd}</b> added to your wallet.", parse_mode="HTML")
+    except: pass
+    await callback.answer("✅ Deposit Approved!", show_alert=True)
+    await callback.message.delete()
+
+@router.callback_query(F.data.startswith("rejdep_"))
+async def reject_deposit(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id): return
+    trxid = callback.data.split("_")[1]
+    if not db: return
+    doc_ref = db.collection('pending_deposits').document(trxid)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('status') != 'pending':
+        await callback.answer("❌ Already processed.", show_alert=True)
+        return await callback.message.delete()
+        
+    data = doc.to_dict()
+    user_id = data.get('user_id')
+    amount_bdt = data.get('amount', 0)
+    
+    doc_ref.update({'status': 'rejected'})
+    try: await bot.send_message(user_id, f"❌ <b>Deposit Rejected!</b>\nYour request for {amount_bdt} BDT was rejected.", parse_mode="HTML")
+    except: pass
+    await callback.answer("❌ Deposit Rejected!", show_alert=True)
     await callback.message.delete()
 
 # ==========================================
@@ -695,7 +710,7 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         })
         doc_ref.delete()
         
-        # 🟢 NEW: રিয়েল সেলস অ্যালার্ট গ্রুপে পাঠানো (ম্যানুয়াল ডেলিভারি শেষে)
+        # 🟢 রিয়েল সেলস অ্যালার্ট গ্রুপে পাঠানো
         if MAIN_GROUPS_ID:
             try:
                 str_uid = str(user_id)
@@ -778,7 +793,8 @@ async def show_category_options(callback: CallbackQuery):
             docs = db.collection('products').where('category', '==', cat).stream()
             for doc in docs:
                 details = doc.to_dict()
-                keyboard.append([InlineKeyboardButton(text=f"{details.get('name')} | ${details.get('price')}", callback_data=f"editp|{doc.id}", style="primary")])
+                status_emoji = "🔴" if details.get('status') == 'paused' else ""
+                keyboard.append([InlineKeyboardButton(text=f"{status_emoji} {details.get('name')} | ${details.get('price')}", callback_data=f"editp|{doc.id}", style="primary")])
                 
     keyboard.append([InlineKeyboardButton(text="◀️ Back to Categories", callback_data="admin_products", style="danger")])
     await callback.message.edit_text(f"📦 <b>Manage: {cat.upper()}</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
@@ -796,7 +812,8 @@ async def show_category_products_sub(callback: CallbackQuery):
     keyboard = []
     for doc in docs:
         details = doc.to_dict()
-        keyboard.append([InlineKeyboardButton(text=f"{details.get('name', 'Unknown')} | ${details.get('price', 0.0)}", callback_data=f"editp|{doc.id}", style="primary")])
+        status_emoji = "🔴" if details.get('status') == 'paused' else ""
+        keyboard.append([InlineKeyboardButton(text=f"{status_emoji} {details.get('name', 'Unknown')} | ${details.get('price', 0.0)}", callback_data=f"editp|{doc.id}", style="primary")])
         
     keyboard.append([InlineKeyboardButton(text="➕ Add New Product", callback_data="add_new_product", style="success")])
     keyboard.append([InlineKeyboardButton(text="🗑️ Delete Sub-Category", callback_data=f"delsubcat|{cat}|{subcat}", style="danger")])
@@ -808,7 +825,21 @@ async def show_category_products_sub(callback: CallbackQuery):
         
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
+# 🟢 NEW: Delete Confirmation for Sub-Category
 @router.callback_query(F.data.startswith("delsubcat|"))
+async def ask_delete_subcat(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    parts = callback.data.split("|")
+    cat = parts[1]
+    subcat = parts[2]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Yes, Delete", callback_data=f"confirm_delsubcat|{cat}|{subcat}", style="danger")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"admin_subcat|{cat}|{subcat}", style="primary")]
+    ])
+    await callback.message.edit_text("⚠️ <b>Are you sure you want to delete this entire sub-category?</b>", reply_markup=keyboard, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("confirm_delsubcat|"))
 async def process_delete_subcat(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
     parts = callback.data.split("|")
@@ -820,7 +851,7 @@ async def process_delete_subcat(callback: CallbackQuery):
     await show_category_options(callback)
 
 # ==========================================
-# 🟢 EDIT PRODUCT MENU (Price, Stock & Description)
+# 🟢 EDIT PRODUCT MENU (Price, Stock, Description, Status & Delete)
 # ==========================================
 @router.callback_query(F.data.startswith("editp|"))
 async def edit_product_menu(callback: CallbackQuery):
@@ -836,22 +867,61 @@ async def edit_product_menu(callback: CallbackQuery):
     stock_count = len(product.get('stock', []))
     delivery_type = product.get('delivery_type', 'manual')
     
+    # 🟢 Status check
+    current_status = product.get('status', 'active')
+    status_text = "🟢 Active" if current_status == 'active' else "🔴 Paused (Out of Stock)"
+    toggle_btn_text = "🔴 Pause Product" if current_status == 'active' else "🟢 Make Active"
+    
     text = (
         f"📦 <b>Product Details</b>\n\n"
         f"🔹 <b>Name:</b> {product.get('name')}\n"
         f"📂 <b>Category:</b> {cat.upper()}\n"
         f"💲 <b>Current Price:</b> ${product.get('price')}\n"
         f"🚚 <b>Delivery Type:</b> {delivery_type.title()}\n"
-        f"🔑 <b>Keys in Stock:</b> {stock_count}"
+        f"🔑 <b>Keys in Stock:</b> {stock_count}\n"
+        f"📊 <b>Status:</b> {status_text}"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
-        [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="success")],
+        [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="primary"), InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_status|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
         [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+# 🟢 NEW: Product Status Toggle (Pause/Active)
+@router.callback_query(F.data.startswith("toggle_status|"))
+async def toggle_product_status(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id): return
+    prod_id = callback.data.split("|")[1]
+    
+    product = await get_product(prod_id)
+    if not product: return await callback.answer("Error loading product.")
+    
+    current_status = product.get('status', 'active')
+    new_status = 'paused' if current_status == 'active' else 'active'
+    
+    db.collection('products').document(prod_id).update({'status': new_status})
+    await callback.answer(f"Product is now {new_status.title()}!")
+    
+    # 🟢 Smart Channel Notification
+    is_autopost = await get_autopost_status()
+    if MAIN_CHANNEL_ID and is_autopost:
+        prod_name = product.get('name')
+        if new_status == 'paused':
+            channel_text = f"⚠️ <b>STOCK OUT NOTICE</b>\n\n🚫 <b>{prod_name}</b> is currently out of stock. Stay tuned for updates!"
+            buy_btn = None
+        else:
+            channel_text = f"🌟 <b>NEW STOCK AVAILABLE!</b>\n\n📦 <b>{prod_name}</b> is back in stock!\n💲 <b>Price:</b> ${product.get('price')}\n\nGrab yours before it's gone!"
+            buy_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=f"https://t.me/{BOT_USERNAME}?start=buy_{prod_id}")]])
+            
+        try: await bot.send_message(MAIN_CHANNEL_ID, channel_text, reply_markup=buy_btn, parse_mode="HTML")
+        except: pass
+        
+    # Reload menu
+    callback.data = f"editp|{prod_id}"
+    await edit_product_menu(callback)
 
 @router.callback_query(F.data.startswith("updatep|"))
 async def start_update_product(callback: CallbackQuery, state: FSMContext):
@@ -895,7 +965,6 @@ async def start_update_product(callback: CallbackQuery, state: FSMContext):
 async def process_desc_update(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
     
-    # 🟢 SMART DETECTION: Check if user pasted raw HTML or used normal text
     raw_text = message.text or ""
     html_tags = ["<b>", "<i>", "<u>", "<s>", "<code>", "<pre>", "<blockquote>", "<a href"]
     
@@ -968,28 +1037,34 @@ async def process_stock_update(message: Message, state: FSMContext, bot: Bot):
         if doc.exists:
             current_stock = doc.to_dict().get('stock', [])
             current_stock.extend(valid_keys)
-            db.collection('products').document(prod_id).update({'stock': current_stock, 'delivery_type': 'auto', 'updated_at': firestore.SERVER_TIMESTAMP})
+            db.collection('products').document(prod_id).update({'stock': current_stock, 'status': 'active', 'delivery_type': 'auto', 'updated_at': firestore.SERVER_TIMESTAMP})
             
     await state.clear()
     await message.answer(f"✅ <b>{len(valid_keys)} Keys Added to Stock!</b>\nDelivery Type is now set to <b>Auto</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
 
+# 🟢 NEW: Delete Confirmation for Product
 @router.callback_query(F.data.startswith("delp|"))
+async def ask_delete_product(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    prod_id = callback.data.split("|")[1]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Yes, Delete", callback_data=f"confirm_delp|{prod_id}", style="danger")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="primary")]
+    ])
+    await callback.message.edit_text("⚠️ <b>Are you sure you want to permanently delete this product?</b>", reply_markup=keyboard, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("confirm_delp|"))
 async def process_delete_product(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
     prod_id = callback.data.split("|")[1]
     product = await get_product(prod_id)
     cat = product.get('category', 'vpn') if product else 'vpn'
     subcat = product.get('sub_category', 'none') if product else 'none'
-    prod_name = product.get('name', 'Product') if product else 'Product'
     
     await delete_product(prod_id)
-    
-    is_autopost = await get_autopost_status()
-    if MAIN_CHANNEL_ID and is_autopost:
-        try: await bot.send_message(MAIN_CHANNEL_ID, f"⚠️ <b>STOCK OUT NOTICE</b>\n\n🚫 <b>{prod_name}</b> is currently out of stock or removed from our shop. Stay tuned for updates!", parse_mode="HTML")
-        except: pass
-
     await callback.answer("✅ Product deleted!", show_alert=True)
+    
     if subcat and subcat != "none":
         callback.data = f"admin_subcat|{cat}|{subcat}"
         await show_category_products_sub(callback)
@@ -1014,7 +1089,7 @@ async def save_subcat(message: Message, state: FSMContext):
     await message.answer(f"✅ Sub-category added to {cat.upper()}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data=f"admin_cat_{cat}", style="primary")]]))
 
 # ==========================================
-# 🆕 Add Product (With Smart Description)
+# 🆕 Add Product
 # ==========================================
 @router.callback_query(F.data == "add_new_product")
 async def add_product_category(callback: CallbackQuery, state: FSMContext):
@@ -1070,7 +1145,6 @@ async def save_new_product_skip_desc(callback: CallbackQuery, state: FSMContext,
 
 @router.message(AddProductState.description)
 async def save_new_product_with_desc(message: Message, state: FSMContext, bot: Bot):
-    # 🟢 SMART DETECTION for New Product
     raw_text = message.text or ""
     html_tags = ["<b>", "<i>", "<u>", "<s>", "<code>", "<pre>", "<blockquote>", "<a href"]
     
@@ -1089,6 +1163,7 @@ async def save_product_to_db(message: Message, state: FSMContext, bot: Bot, desc
     prod_data = {
         'product_id': new_prod_id, 'category': data['prod_category'], 'sub_category': data['prod_subcat'],
         'name': data['prod_name'], 'price': price, 'delivery_type': 'manual', 'stock': [],
+        'status': 'active', # 🟢 New products default to active
         'updated_at': firestore.SERVER_TIMESTAMP
     }
     if desc:
