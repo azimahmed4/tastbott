@@ -512,7 +512,7 @@ async def show_pending_deposits(callback: CallbackQuery):
     text = "⏳ <b>Pending Deposits:</b>"
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    # 🟢 FIXED: ছবি থেকে লিস্টে ব্যাক করার সময় এরর এড়াতে
+    # 🟢 FIXED: ছবি থেকে লিস্টে ব্যাক করার সময় এরর এড়াতে
     try:
         if callback.message.photo or callback.message.document:
             await callback.message.delete()
@@ -589,7 +589,7 @@ async def approve_deposit(callback: CallbackQuery, bot: Bot):
     except: pass
     
     await callback.answer("✅ Deposit Approved!", show_alert=True)
-    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
+    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
     
     # 🟢 NEW: মেসেজ গায়েব হওয়ার পর মেইন প্যানেল নিয়ে আসা
     await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
@@ -620,7 +620,7 @@ async def reject_deposit(callback: CallbackQuery, bot: Bot):
     except: pass
     
     await callback.answer("❌ Deposit Rejected!", show_alert=True)
-    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
+    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
     
     # 🟢 NEW: মেসেজ গায়েব হওয়ার পর মেইন প্যানেল নিয়ে আসা
     await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
@@ -893,7 +893,7 @@ async def process_delete_subcat(callback: CallbackQuery):
     await show_category_options(callback)
 
 # ==========================================
-# 🟢 EDIT PRODUCT MENU (Price, Stock, Description, Status & Delete)
+# 🟢 EDIT PRODUCT MENU (Price, Stock, Description, Status, Promo Mute & Delete)
 # ==========================================
 @router.callback_query(F.data.startswith("editp|"))
 async def edit_product_menu(callback: CallbackQuery):
@@ -909,10 +909,14 @@ async def edit_product_menu(callback: CallbackQuery):
     stock_count = len(product.get('stock', []))
     delivery_type = product.get('delivery_type', 'manual')
     
-    # 🟢 Status check
+    # Status check
     current_status = product.get('status', 'active')
     status_text = "🟢 Active" if current_status == 'active' else "🔴 Paused (Out of Stock)"
     toggle_btn_text = "🔴 Pause Product" if current_status == 'active' else "🟢 Make Active"
+    
+    # 🟢 NEW: Promo Mute check
+    is_muted = product.get('promo_muted', False)
+    promo_btn_text = "🔊 Promo On" if is_muted else "🔕 Mute Promo"
     
     text = (
         f"📦 <b>Product Details</b>\n\n"
@@ -927,12 +931,33 @@ async def edit_product_menu(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="primary"), InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_status|{prod_id}", style="primary")],
-        [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
+        # 🟢 NEW: Mute Promo Button Added
+        [InlineKeyboardButton(text=promo_btn_text, callback_data=f"mutepromo|{prod_id}", style="primary"), InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
         [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🟢 NEW: Product Status Toggle (Pause/Active)
+# 🟢 NEW: Toggle Promo Mute
+@router.callback_query(F.data.startswith("mutepromo|"))
+async def toggle_promo_mute(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    prod_id = callback.data.split("|")[1]
+    
+    product = await get_product(prod_id)
+    if not product: return await callback.answer("Error loading product.")
+    
+    is_muted = product.get('promo_muted', False)
+    new_muted_status = not is_muted
+    
+    db.collection('products').document(prod_id).update({'promo_muted': new_muted_status})
+    status_text = "Muted" if new_muted_status else "Unmuted"
+    await callback.answer(f"Promo is now {status_text} for this product!")
+    
+    # Reload menu
+    callback.data = f"editp|{prod_id}"
+    await edit_product_menu(callback)
+
+# Product Status Toggle (Pause/Active)
 @router.callback_query(F.data.startswith("toggle_status|"))
 async def toggle_product_status(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -947,7 +972,7 @@ async def toggle_product_status(callback: CallbackQuery, bot: Bot):
     db.collection('products').document(prod_id).update({'status': new_status})
     await callback.answer(f"Product is now {new_status.title()}!")
     
-    # 🟢 Smart Channel Notification
+    # Smart Channel Notification
     is_autopost = await get_autopost_status()
     if MAIN_CHANNEL_ID and is_autopost:
         prod_name = product.get('name')
@@ -1084,7 +1109,7 @@ async def process_stock_update(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     await message.answer(f"✅ <b>{len(valid_keys)} Keys Added to Stock!</b>\nDelivery Type is now set to <b>Auto</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
 
-# 🟢 NEW: Delete Confirmation for Product
+# Delete Confirmation for Product
 @router.callback_query(F.data.startswith("delp|"))
 async def ask_delete_product(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -1205,7 +1230,8 @@ async def save_product_to_db(message: Message, state: FSMContext, bot: Bot, desc
     prod_data = {
         'product_id': new_prod_id, 'category': data['prod_category'], 'sub_category': data['prod_subcat'],
         'name': data['prod_name'], 'price': price, 'delivery_type': 'manual', 'stock': [],
-        'status': 'active', # 🟢 New products default to active
+        'status': 'active', 
+        'promo_muted': False, # 🟢 NEW: Default is False
         'updated_at': firestore.SERVER_TIMESTAMP
     }
     if desc:
@@ -1227,7 +1253,7 @@ async def save_product_to_db(message: Message, state: FSMContext, bot: Bot, desc
     await message.answer(f"✅ <b>Product Added Successfully!</b>\n📦 {data['prod_name']} - ${price}", reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# 👥 Users Management
+# 👥 Users Management & Clear Test Data
 # ==========================================
 @router.callback_query(F.data == "admin_users")
 async def manage_users_menu(callback: CallbackQuery, state: FSMContext):
@@ -1267,11 +1293,44 @@ async def search_user_result(message: Message, state: FSMContext):
         f"💰 <b>Balance:</b> ${user_info.get('balance', 0.0):.2f}\n"
         f"💸 <b>Spent:</b> ${user_info.get('total_spent', 0.0):.2f}"
     )
+    # 🟢 NEW: Clear Test Data Button Added Here
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Add Balance", callback_data=f"addbal_{target_uid}", style="success"), InlineKeyboardButton(text="➖ Deduct Balance", callback_data=f"dedbal_{target_uid}", style="danger")],
+        [InlineKeyboardButton(text="🧹 Clear Test Data", callback_data=f"cleardata_{target_uid}", style="danger")],
         [InlineKeyboardButton(text="◀️ Back", callback_data="search_user", style="primary")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+# 🟢 NEW: Clear Test Data Function
+@router.callback_query(F.data.startswith("cleardata_"))
+async def clear_test_data(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    target_uid = callback.data.split("_")[1]
+    
+    if not db: return await callback.answer("Database Error")
+    
+    # 1. Reset balance & spent
+    db.collection('users').document(str(target_uid)).update({'balance': 0.0, 'total_spent': 0.0})
+    
+    # 2. Delete Orders
+    orders = db.collection('orders').where('user_id', '==', int(target_uid)).stream()
+    for doc in orders: doc.reference.delete()
+        
+    # 3. Delete Pending Orders
+    p_orders = db.collection('pending_orders').where('user_id', '==', int(target_uid)).stream()
+    for doc in p_orders: doc.reference.delete()
+        
+    # 4. Delete Deposit History
+    deposits = db.collection('deposit_history').where('user_id', '==', int(target_uid)).stream()
+    for doc in deposits: doc.reference.delete()
+        
+    await callback.answer(f"✅ All Test Orders & Deposits cleared for User {target_uid}!", show_alert=True)
+    
+    # Refresh screen
+    message = callback.message
+    message.text = target_uid
+    message.from_user = callback.from_user
+    await search_user_result(message, FSMContext(storage=None, key=None)) 
 
 @router.callback_query(F.data.startswith("addbal_") | F.data.startswith("dedbal_"))
 async def ask_balance_amount(callback: CallbackQuery, state: FSMContext):
