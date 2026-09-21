@@ -10,7 +10,6 @@ from config import BOT_TOKEN, MAIN_GROUPS_ID, BOT_USERNAME
 from middlewares.force_join import ForceSubMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
 
-# 🟢 FIXED: get_bot_status ইমপোর্ট করা হলো মেইনটেনেন্স চেক করার জন্য
 from database.crud import db, get_bot_status 
 
 # সবগুলো রাউটার ইমপোর্ট করা হচ্ছে
@@ -23,7 +22,7 @@ from handlers.profile import router as profile_router
 from handlers.others import router as others_router 
 
 # ==========================================
-# 🟢 হেল্পার ফাংশন: ফেক সেল মেসেজ (কোয়ান্টিটি সহ)
+# 🟢 হেল্পার ফাংশন: ফেক সেল মেসেজ (কোয়ান্টিটি সহ)
 # ==========================================
 async def send_fake_sale_message(bot: Bot, product: dict):
     product_name = product.get('name', 'Premium Service')
@@ -32,7 +31,7 @@ async def send_fake_sale_message(bot: Bot, product: dict):
     # র‍্যান্ডম ফেক ইউজার আইডি তৈরি (e.g., 105***78)
     fake_user_id = f"{random.randint(100, 999)}***{random.randint(10, 99)}"
     
-    # র‍্যান্ডম কোয়ান্টিটি (বেশিরভাগ সময় 1, মাঝে মাঝে 2, 3 বা 5)
+    # র‍্যান্ডম কোয়ান্টিটি (বেশিরভাগ সময় 1, মাঝে মাঝে 2, 3 বা 5)
     fake_qty = random.choices([1, 2, 3, 5], weights=[75, 15, 7, 3])[0]
     
     promo_text = (
@@ -59,7 +58,7 @@ async def send_fake_sale_message(bot: Bot, product: dict):
         pass
 
 # ==========================================
-# 🟢 NEW: Simulated Sales Loop (Real Trending Burst Mode & Maintenance Check)
+# 🟢 NEW: Simulated Sales Loop (Promo Mute & Low Stock Safety Added)
 # ==========================================
 async def simulated_sales_loop(bot: Bot):
     print("🚀 Simulated Sales Loop Started...")
@@ -67,10 +66,9 @@ async def simulated_sales_loop(bot: Bot):
     
     while True:
         try:
-            # 🟢 FIXED: মেইনটেনেন্স মোড চেক করা
+            # মেইনটেনেন্স মোড চেক করা
             is_maintenance = await get_bot_status()
             if is_maintenance:
-                # বট মেইনটেনেন্সে থাকলে ফেক সেল বন্ধ থাকবে, ১ মিনিট পর আবার চেক করবে
                 await asyncio.sleep(60)
                 continue
 
@@ -80,32 +78,48 @@ async def simulated_sales_loop(bot: Bot):
                 
             # ডাটাবেস থেকে অ্যাক্টিভ প্রোডাক্ট নিয়ে আসা
             docs = db.collection('products').stream()
-            active_products = [doc.to_dict() for doc in docs if doc.to_dict().get('status', 'active') == 'active']
+            active_products = []
+            
+            for doc in docs:
+                p_data = doc.to_dict()
+                
+                # 🟢 NEW: Promo Muted থাকলে ইগনোর করবে
+                if p_data.get('status', 'active') == 'active' and not p_data.get('promo_muted', False):
+                    
+                    # 🟢 NEW: Auto Delivery এর ক্ষেত্রে স্টক ৫ টার কম থাকলে Burst/Promo অফ থাকবে
+                    if p_data.get('delivery_type') == 'auto':
+                        stock_len = len(p_data.get('stock', []))
+                        if stock_len < 5:
+                            continue # এই প্রোডাক্টটা প্রমোশনের জন্য নেবে না
+                            
+                    active_products.append(p_data)
             
             if not active_products:
                 await asyncio.sleep(600) 
                 continue
                 
-            # 15% চান্স থাকবে Burst (ঝড়) ট্রিগার হওয়ার
+            # 15% চান্স থাকবে Burst (ঝড়) ট্রিগার হওয়ার
             is_burst_mode = random.random() < 0.15 
             
             if is_burst_mode:
                 burst_product = None
                 try:
-                    # ডাটাবেস থেকে লাস্ট রিয়েল অর্ডারগুলো চেক করা
+                    # ডাটাবেস থেকে লাস্ট রিয়েল অর্ডারগুলো চেক করা
                     recent_docs = db.collection('orders').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(5).stream()
                     recent_products = []
                     for doc in recent_docs:
                         d = doc.to_dict()
                         if d.get('product_id'):
-                            recent_products.append({'product_id': d['product_id'], 'name': d.get('product_name')})
+                            # চেক করবো যে এই প্রোডাক্টটা আমাদের active_products লিস্টে আছে কি না
+                            if any(p['product_id'] == d['product_id'] for p in active_products):
+                                recent_products.append({'product_id': d['product_id'], 'name': d.get('product_name')})
                     
                     if recent_products:
                         burst_product = random.choice(recent_products) 
                 except Exception:
                     pass
                 
-                # যদি কোনো রিয়েল সেল না পাওয়া যায়, তখন র‍্যান্ডম প্রোডাক্ট নেবে
+                # যদি কোনো রিয়েল সেল না পাওয়া যায়, তখন র‍্যান্ডম প্রোডাক্ট নেবে
                 if not burst_product:
                     burst_product = random.choice(active_products)
                     
@@ -113,7 +127,7 @@ async def simulated_sales_loop(bot: Bot):
                 print(f"🔥 REAL TRENDING BURST! {burst_count} fake sales for {burst_product.get('name')}")
                 
                 for _ in range(burst_count):
-                    # 🟢 Safety Check: বার্স্ট চলাকালীন যদি হঠাৎ মেইনটেনেন্স অন করা হয়!
+                    # Safety Check: বার্স্ট চলাকালীন যদি হঠাৎ মেইনটেনেন্স অন করা হয়!
                     if await get_bot_status():
                         break 
 
