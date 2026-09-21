@@ -7,23 +7,15 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from firebase_admin import firestore
 from database.crud import db, get_user, get_product, create_pending_order, generate_invoice_id
 
-# 🟢 NEW: MAIN_GROUPS_ID ইমপোর্ট করা হলো রিয়েল সেলস অ্যালার্ট পাঠানোর জন্য
 from config import ADMIN_IDS, BOT_USERNAME, MAIN_GROUPS_ID 
 
 router = Router()
 
-# ==========================================
-# 🎨 PREMIUM EMOJI IDs 
-# ==========================================
 EMOJI_CART = "5368324170671202286"
 EMOJI_DONE = "5368324170671202287"
 EMOJI_SEARCH = "5368324170671202289"
 
-# ==========================================
-# 🟢 SMART DELIVERY FORMATTER
-# ==========================================
 def format_delivery_text(category: str, raw_data: str) -> str:
-    """ক্যাটাগরি অনুযায়ী ডেলিভারি মেসেজ সুন্দর করে সাজানোর ফাংশন"""
     cat = category.lower()
     parts = raw_data.split(":")
     
@@ -40,17 +32,13 @@ def format_delivery_text(category: str, raw_data: str) -> str:
             f"🔐 <b>Pass:</b> <code>{':'.join(parts[1:]).strip()}</code>"
         )
     else:
-        # Subscription বা অন্য যেকোনো ফরম্যাটের জন্য ডিফল্ট
         return f"🔗 <b>Link/Key:</b> <code>{raw_data}</code>"
 
-# 🟢 NEW: রিয়েল সেলস অ্যালার্টে Quantity যুক্ত করা হলো
 async def send_real_sales_alert(bot: Bot, product_id: str, product_name: str, user_id: int, qty: int):
-    """রিয়েল টাইম সেলস অ্যালার্ট গ্রুপে পাঠানোর ফাংশন"""
     if not MAIN_GROUPS_ID:
         return
         
     try:
-        # ইউজারের আইডি মাস্ক করা
         str_uid = str(user_id)
         if len(str_uid) > 4:
             masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}"
@@ -77,7 +65,7 @@ async def send_real_sales_alert(bot: Bot, product_id: str, product_name: str, us
             reply_markup=buy_btn
         )
     except Exception as e:
-        pass # গ্রুপে অ্যালার্ট পাঠাতে ফেইল করলে মেইন প্রসেস যেন ক্র্যাশ না করে
+        pass 
 
 @router.callback_query(F.data.startswith("pay_"))
 async def process_payment(callback: CallbackQuery, bot: Bot):
@@ -105,7 +93,6 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
     if user_balance < total_price:
         return await callback.answer(f"❌ Insufficient balance! You need ${total_price}, but have ${user_balance:.2f}.", show_alert=True)
 
-    # ১. ব্যালেন্স কাটা এবং total_spent বাড়ানো
     db.collection('users').document(str(user_id)).update({
         'balance': firestore.Increment(-total_price),
         'total_spent': firestore.Increment(total_price)
@@ -114,15 +101,13 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
     delivery_type = product.get('delivery_type', 'manual')
     stock_list = product.get('stock', [])
     
-    # 🟢 AUTO DELIVERY LOGIC (স্টক থাকলে সাথে সাথে ডেলিভারি)
     if delivery_type == "auto" and len(stock_list) >= qty:
         delivered_items = stock_list[:qty]
         remaining_stock = stock_list[qty:]
         
-        # ডাটাবেসে স্টক আপডেট করা
+        # 🟢 FIXED: অটো-পজ লজিক রিমুভ করে দিয়েছি। শুধু স্টক আপডেট হবে।
         db.collection('products').document(prod_id).update({'stock': remaining_stock})
         
-        # ইনভয়েস জেনারেট এবং Completed Orders এ সেভ করা
         invoice_id = generate_invoice_id()
         
         db.collection('orders').document(invoice_id).set({
@@ -132,7 +117,6 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
             'completed_by': 'System', 'timestamp': firestore.SERVER_TIMESTAMP
         })
         
-        # 🟢 ইউজারের কাছে অটো-ডেলিভারি মেসেজ পাঠানো (Smart Format)
         delivery_text = (
             f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
             f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
@@ -151,18 +135,20 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{prod_id}", style="success")]])
         await callback.message.edit_text(delivery_text, reply_markup=buy_again_kb, parse_mode="HTML")
         
-        # 🟢 NEW: রিয়েল সেলস অ্যালার্ট গ্রুপে পাঠানো
-        await send_real_sales_alert(bot, prod_id, product['name'], user_id)
+        # 🟢 FIXED: qty আর্গুমেন্ট যোগ করা হয়েছে, আর ক্র্যাশ করবে না।
+        await send_real_sales_alert(bot, prod_id, product['name'], user_id, qty)
         
-        # স্টক কমে গেলে অ্যাডমিনদের অটোমেটিক অ্যালার্ট দেওয়া
+        # 🟢 FIXED: স্টক জিরো হলেও শুধু অ্যালার্ট দেবে, পজ করবে না।
         if len(remaining_stock) <= 2:
+            alert_text = f"⚠️ <b>Low Stock Alert!</b>\nProduct: <b>{product['name']}</b> has only {len(remaining_stock)} left in stock."
+            if len(remaining_stock) == 0:
+                alert_text = f"🚨 <b>OUT OF STOCK ALERT!</b>\nProduct: <b>{product['name']}</b> has reached 0 stock.\nPlease add more stock or deliver manually if orders arrive."
+                
             for admin_id in ADMIN_IDS:
-                try: await bot.send_message(admin_id, f"⚠️ <b>Low Stock Alert!</b>\nProduct: {product['name']} has only {len(remaining_stock)} left in stock.")
+                try: await bot.send_message(admin_id, alert_text, parse_mode="HTML")
                 except: pass
                 
-    # 🟠 MANUAL LOGIC OR OUT OF STOCK (পেন্ডিং অর্ডারে পাঠানো)
     else:
-        # পেন্ডিং অর্ডার তৈরি এবং ইনভয়েস আইডি কালেক্ট করা
         invoice_id = await create_pending_order(user_id, prod_id, product['name'], qty, total_price, delivery_type="manual")
         new_balance = round(user_balance - total_price, 2)
         
@@ -181,7 +167,6 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         ])
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         
-        # অ্যাডমিনদের কাছে নোটিফিকেশন পাঠানো
         admin_text = (
             f"🚨 <b>NEW MANUAL ORDER!</b>\n\n"
             f"🧾 <b>Invoice:</b> <code>{invoice_id}</code>\n"
