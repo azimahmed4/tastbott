@@ -29,6 +29,8 @@ class InvoiceSearchState(StatesGroup):
 async def show_categories(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = "🛒 <b>Shop Categories</b>\n\nPlease select a category:"
+    
+    # বাটন আগে যেমন ছিল, ঠিক তেমনই রাখা হয়েছে
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🌐 VPN", callback_data="showcat_vpn", style="primary"),
@@ -70,14 +72,22 @@ async def view_my_orders(callback: CallbackQuery):
     
     text = f"📦 <b>My Orders (Page {page+1})</b>\n\n"
     for o in current_orders:
-        status = "✅ Delivered" if 'items_delivered' in o else "⏳ Processing"
+        status = "✅ Delivered" if 'items_delivered' in o and o['items_delivered'] else "⏳ Processing"
         text += (
             f"🧾 <b>Invoice:</b> <code>{o.get('invoice_id', o.get('order_id'))}</code>\n"
             f"🛍️ <b>Item:</b> {o.get('product_name')} (x{o.get('qty')})\n"
             f"💰 <b>Total:</b> ${o.get('total_price')}\n"
             f"📊 <b>Status:</b> {status}\n"
-            f"➖➖➖➖➖➖➖➖\n"
         )
+        
+        # 🟢 NEW: ডেলিভারি ডিটেইলস (Credentials) অর্ডারের সাথে দেখানো হচ্ছে
+        if 'items_delivered' in o and o['items_delivered']:
+            text += f"🎁 <b>Delivery Details:</b>\n"
+            for item in o['items_delivered']:
+                # কোড ব্লকে রাখছি যাতে ইউজার এক ক্লিকে কপি করতে পারে
+                text += f"<code>{item}</code>\n"
+                
+        text += f"➖➖➖➖➖➖➖➖\n"
         
     nav_row = []
     if page > 0:
@@ -131,8 +141,14 @@ async def process_invoice_search(message: Message, state: FSMContext):
         f"🛒 <b>Item:</b> {order.get('product_name')}\n"
         f"🔢 <b>Qty:</b> {order.get('qty')}\n"
         f"💰 <b>Price:</b> ${order.get('total_price')}\n"
-        f"🛡️ <b>Completed by:</b> {order.get('completed_by', 'System' if 'items_delivered' in order else 'Pending')}"
+        f"🛡️ <b>Completed by:</b> {order.get('completed_by', 'System' if 'items_delivered' in order else 'Pending')}\n"
     )
+    
+    # 🟢 NEW: ট্র্যাক ইনভয়েসেও ডেলিভারি ডিটেইলস (Credentials) দেখানো হচ্ছে
+    if 'items_delivered' in order and order['items_delivered']:
+        text += f"\n🎁 <b>Delivery Details:</b>\n"
+        for item in order['items_delivered']:
+            text += f"<code>{item}</code>\n"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Shop", callback_data="menu_buy")]])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
@@ -179,7 +195,6 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     for i in range(0, len(current_products), 2):
         pid1, details1 = current_products[i]
         
-        # 🟢 NEW: Check status and apply danger style if paused
         btn_style1 = "danger" if details1.get('status') == 'paused' else "primary"
         row = [InlineKeyboardButton(text=f"{details1['name']}", callback_data=f"buy_{pid1}", style=btn_style1)]
         
@@ -210,7 +225,6 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
 async def start_buy(callback: CallbackQuery):
     prod_id = callback.data.split("_", 1)[1]
     
-    # 🟢 NEW: Block purchase if product is paused (Out of Stock)
     product = await get_product(prod_id)
     if not product:
         return await callback.answer("❌ Error: Product not found!", show_alert=True)
@@ -223,7 +237,6 @@ async def start_buy(callback: CallbackQuery):
 async def buy_again_shortcut(callback: CallbackQuery):
     prod_id = callback.data.split("_")[1]
     
-    # 🟢 NEW: Block purchase if product is paused
     product = await get_product(prod_id)
     if product and product.get('status') == 'paused':
         return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
@@ -243,11 +256,9 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
     if not product:
         return await callback.answer("❌ Error: Product not found!", show_alert=True)
         
-    # Safety Check inside selector as well
     if product.get('status') == 'paused':
         return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
     
-    # 🟢 Fetch User Balance for "Wallet" display
     user_id = str(callback.from_user.id)
     wallet_balance = 0.0
     if db:
@@ -261,7 +272,6 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
     
     back_btn = f"shop_p|{cat}|{subcat}|0" if subcat and subcat != "none" else f"showcat_{cat}"
     
-    # 🟢 Clean and Simple UI matched with Bot's original theme
     text = (
         f"🛒 <b>Order Summary</b>\n\n"
         f"📦 <b>Product:</b> {product['name']}\n"
@@ -305,7 +315,6 @@ async def show_product_note(callback: CallbackQuery):
     if custom_desc:
         note_content = custom_desc
     else:
-        # 🟢 BEAUTIFUL DEFAULT NOTE (Blockquote format)
         note_content = (
             "<b>Description:</b>\n"
             "<blockquote>"
