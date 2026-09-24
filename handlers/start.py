@@ -9,28 +9,12 @@ from keyboards.inline_menus import get_main_menu
 from database.crud import db, add_user, get_user
 from config import REFERRAL_BONUS
 
-# 🟢 NEW: সরাসরি প্রোডাক্ট কেনার পেজ দেখানোর জন্য shop.py থেকে ফাংশন ইমপোর্ট
 from handlers.shop import show_quantity_selector
 
 router = Router()
 
-# 🟢 FIXED: Aiogram 3 FrozenInstanceError এড়াতে কাস্টম FakeCallback ক্লাস তৈরি
-class FakeCallback:
-    def __init__(self, message: Message, user):
-        self.message = message
-        self.from_user = user
-        self.id = "0"
-        
-    async def answer(self, text=None, show_alert=False, **kwargs):
-        # যদি প্রোডাক্ট না থাকে বা Out of Stock থাকে, তবে মেসেজ এডিট করে এরর দেখাবে
-        if text:
-            try: await self.message.edit_text(text)
-            except: pass
-
 # 🚀 ফায়ারবেস ব্যবহার করে রেফারেল বোনাস দেওয়ার হেল্পার ফাংশন
 async def process_referral_reward(bot: Bot, user_id: int, referrer_id: int):
-    # crud.py-এর add_user ফাংশনটি আগেই ইউজারের total_referrals বাড়িয়ে দিয়েছে।
-    # এখানে আমরা শুধু রেফারারের ব্যালেন্সে রেফারেল বোনাসটি যোগ করব।
     if not db:
         return
 
@@ -39,12 +23,10 @@ async def process_referral_reward(bot: Bot, user_id: int, referrer_id: int):
         referrer_doc = referrer_ref.get()
         
         if referrer_doc.exists:
-            # রেফারারের ব্যালেন্সে বোনাস যোগ করা
             referrer_ref.update({
                 'balance': firestore.Increment(REFERRAL_BONUS)
             })
             
-            # টাস্ক কমপ্লিট হলে রেফারারকে নোটিফিকেশন পাঠানো
             await bot.send_message(
                 chat_id=referrer_id, 
                 text=f"🎉 <b>New Referral Success!</b>\nSomeone joined using your link and completed all tasks. You received a bonus of <b>${REFERRAL_BONUS}</b>!",
@@ -59,52 +41,41 @@ async def handle_start(message: Message, command: CommandObject, state: FSMConte
     user_id = message.from_user.id
     username = message.from_user.username or ""
     first_name = message.from_user.first_name or "User"
-    args = command.args # ?start=123456 OR ?start=buy_p12345
+    args = command.args 
     
-    # ফায়ারবেস থেকে চেক করা ইউজার আগে থেকে আছে কি না
     existing_user = await get_user(user_id)
     is_joined = await check_membership(message.bot, user_id)
 
-    # 🟢 NEW: Deep Link Payload Handling (Referral vs Buy Product)
     buy_product_id = None
     referrer_id = None
     
     if args:
         if args.startswith("buy_"):
-            buy_product_id = args.split("_", 1)[1] # "buy_p12345" থেকে "p12345" বের করা
+            buy_product_id = args.split("_", 1)[1] 
         elif args.isdigit():
             ref_id = int(args)
             if ref_id != user_id:
                 referrer_id = ref_id
 
-    # যদি নতুন ইউজার হয়
     if not existing_user:
         if is_joined:
-            # যদি আগে থেকেই জয়েন থাকে, ফায়ারবেসে সেভ করো (ব্যালেন্স ০ হবে) এবং বোনাস দাও
             is_new = await add_user(user_id, username, first_name, referrer_id)
             if is_new and referrer_id:
                 await process_referral_reward(message.bot, user_id, referrer_id)
         else:
-            # জয়েন না থাকলে শুধু রেফারারের আইডি ও প্রোডাক্ট আইডি state-এ সেভ করে রাখো
             state_data = {}
             if referrer_id: state_data["referred_by"] = referrer_id
             if buy_product_id: state_data["buy_product_id"] = buy_product_id
             if state_data: await state.update_data(**state_data)
 
-    # যদি ইউজার সব চ্যানেলে জয়েন থাকে, তবেই মেইন মেনু দেখাবে
     if is_joined:
-        # 🟢 NEW: যদি ডিপ-লিংক এ buy_ID থাকে, তাহলে সরাসরি প্রোডাক্ট পেজ দেখাও
         if buy_product_id:
             try: await message.delete()
             except: pass
             
-            # সরাসরি প্রোডাক্টের পেজ পাঠানো
-            sent_msg = await message.answer("⏳ Loading product details...")
-            
-            # 🟢 FIXED: Aiogram 3 এর Frozen error এড়াতে কাস্টম FakeCallback
-            fake_callback = FakeCallback(sent_msg, message.from_user)
-            
-            await show_quantity_selector(fake_callback, buy_product_id, 1)
+            # 🟢 FIXED: FakeCallback রিমুভ করে সরাসরি Message পাস করা হয়েছে এবং edit_msg=False করা হয়েছে।
+            # এর ফলে চ্যানেল লিংকে ক্লিক করলে আর কোনো গ্লিচি বাটন ছাড়া মেসেজ আসবে না!
+            await show_quantity_selector(message, buy_product_id, qty=0, edit_msg=False)
             await state.clear()
             return
             
@@ -125,25 +96,19 @@ async def verify_join(callback: CallbackQuery, state: FSMContext, bot: Bot):
         existing_user = await get_user(user_id)
         data = await state.get_data()
         
-        # 🚀 যদি ইউজারের ফায়ারবেস প্রোফাইল না থাকে (অর্থাৎ সে একদম নতুন)
         if not existing_user:
             referrer_id = data.get("referred_by")
-            
-            # ফায়ারবেসে ইউজার সেভ করা (এখানেই ব্যালেন্স ০ হয়ে যাবে)
             is_new = await add_user(user_id, username, first_name, referrer_id)
             
-            # টাস্ক কমপ্লিট, এবার রেফারারকে টাকা দেওয়া হবে
             if is_new and referrer_id:
                 await process_referral_reward(bot, user_id, referrer_id)
                 
-        # 🟢 NEW: নতুন ইউজার জয়েন করার পর যদি ডিপ-লিংক প্রোডাক্ট থাকে, সেটা দেখানো
         buy_product_id = data.get("buy_product_id")
         await state.clear()
         
         if buy_product_id:
-            # 🟢 FIXED: Check Join এর ক্ষেত্রে অরিজিনাল কলব্যাকই কাজ করবে
-            await callback.message.edit_text("⏳ Loading product details...")
-            await show_quantity_selector(callback, buy_product_id, 1)
+            # 🟢 FIXED: নতুন ইউজার চ্যানেল থেকে লিংকে ক্লিক করে জয়েন করার পর ডিরেক্ট কলব্যাক কাজ করবে
+            await show_quantity_selector(callback, buy_product_id, qty=0, edit_msg=True)
             return
             
         welcome_text = f"Welcome to OmniSub Store! 🚀\nHello {first_name}, please select an option below:"
