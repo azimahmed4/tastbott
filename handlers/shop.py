@@ -143,17 +143,21 @@ async def buy_again_shortcut(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("setqty_"))
 async def update_quantity(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    qty, prod_id = int(parts[1]), "_".join(parts[2:])
-    
-    # 🟢 FIXED: মাইনাস বাটনে ক্লিক করলে মিনিমাম কোয়ান্টিটির নিচে গেলে অ্যালার্ট দেবে
-    product = await get_product(prod_id)
-    min_qty = product.get('min_qty', 1) if product else 1
-    
-    if qty < min_qty: 
-        return await callback.answer(f"⚠️ You must buy at least {min_qty} pieces!", show_alert=True)
-    
-    await show_quantity_selector(callback, prod_id, qty)
+    try:
+        parts = callback.data.split("_")
+        qty, prod_id = int(parts[1]), "_".join(parts[2:])
+        
+        product = await get_product(prod_id)
+        min_qty = product.get('min_qty', 1) if product else 1
+        
+        # 🟢 FIXED: মাইনাস বাটনে ক্লিক করলে মিনিমাম কোয়ান্টিটির নিচে গেলে অ্যালার্ট দেবে
+        if qty < min_qty: 
+            await callback.answer(text=f"⚠️ You must buy at least {min_qty} pieces!", show_alert=True)
+            return
+        
+        await show_quantity_selector(callback, prod_id, qty)
+    except Exception:
+        await callback.answer("❌ Error processing quantity.", show_alert=True)
 
 @router.callback_query(F.data.startswith("customqty_"))
 async def ask_custom_qty(callback: CallbackQuery, state: FSMContext):
@@ -180,6 +184,7 @@ async def process_custom_qty(message: Message, state: FSMContext):
 
 async def show_quantity_selector(event, prod_id: str, qty: int = 0, edit_msg: bool = True):
     is_callback = isinstance(event, CallbackQuery)
+    bot_instance = event.bot if hasattr(event, 'bot') else None
     
     product = await get_product(prod_id)
     if not product:
@@ -190,7 +195,6 @@ async def show_quantity_selector(event, prod_id: str, qty: int = 0, edit_msg: bo
         msg = "❌ This product is currently Out of Stock!"
         return await event.answer(msg, show_alert=True) if is_callback else await event.answer(msg)
     
-    # 🟢 AUTO-SNAP QTY TO MIN_QTY (চ্যানেল থেকে ডিরেক্ট ক্লিক করলে যেন অটোমেটিক ফিক্স হয়)
     min_qty = product.get('min_qty', 1)
     if qty < min_qty:
         qty = min_qty
@@ -234,11 +238,18 @@ async def show_quantity_selector(event, prod_id: str, qty: int = 0, edit_msg: bo
     
     try: 
         if is_callback:
-            if edit_msg: await event.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-            else: await event.message.answer(text, reply_markup=keyboard, parse_mode="HTML") 
+            if edit_msg: 
+                await event.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+            else: 
+                await event.message.answer(text, reply_markup=keyboard, parse_mode="HTML") 
         else:
-            await event.answer(text, reply_markup=keyboard, parse_mode="HTML")
-    except: pass 
+            # 🟢 FIXED: চ্যানেল লিংক থেকে সরাসরি কল হলে bot.send_message ব্যবহার করবে, যাতে parse_mode ১০০% কাজ করে!
+            if bot_instance:
+                await bot_instance.send_message(chat_id=event.from_user.id, text=text, reply_markup=keyboard, parse_mode="HTML")
+            else:
+                await event.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        pass 
 
 @router.callback_query(F.data == "ignore_qty")
 async def ignore_qty_click(callback: CallbackQuery):
@@ -254,4 +265,3 @@ async def show_product_note(callback: CallbackQuery):
         "<b>Note:</b>\n<blockquote>✅ OFFICIAL ACTIVATION LINK / KEY\n✅ SELF REDEEM / SELF ACTIVATION\n✅ WORKS ON PERSONAL ACCOUNTS\n✅ SUPPORTS ALL DEVICES\n✅ NO ACCOUNT SHARING REQUIRED\n❌ NO WARRANTY IF RULES BROKEN\n❌ MUST BE CLAIMED WITHIN 24 HOURS\n❌ LOGIN MUST ON JUST 1 DEVICE TRY TO DON'T USE MULTIPLE.\n⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️\n<i>DO NOT OPEN THE LINK JUST TO CHECK. IF YOU DO, IT WILL BECOME INVALID.</i></blockquote>")
 
     await callback.message.edit_text(f"📦 <b>{product['name']}</b>\n\n{note_content}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Purchase", callback_data=f"buy_{prod_id}", style="primary")]]), parse_mode="HTML")
-    
