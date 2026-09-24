@@ -46,7 +46,7 @@ async def show_categories(callback: CallbackQuery, state: FSMContext):
         ],
         # 🟢 NEW: Proxy Checker Button Added Here
         [
-            InlineKeyboardButton(text="📡 Universal Proxy Checker", callback_data="check_proxy", style="success")
+            InlineKeyboardButton(text="📡 All Proxy Checker", callback_data="check_proxy", style="success")
         ],
         [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
