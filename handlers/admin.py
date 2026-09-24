@@ -626,7 +626,7 @@ async def reject_deposit(callback: CallbackQuery, bot: Bot):
     await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
 
 # ==========================================
-# 📦 Loop Manual Delivery System
+# 📦 Loop Manual Delivery System (🟢 WITH FILE DELIVERY)
 # ==========================================
 @router.callback_query(F.data == "admin_orders")
 async def show_pending_orders(callback: CallbackQuery):
@@ -678,7 +678,7 @@ async def start_delivery(callback: CallbackQuery, state: FSMContext):
     qty = int(doc.to_dict().get('qty', 1))
     
     prompt = await callback.message.edit_text(
-        f"📝 <b>Delivery Required (Item 1 of {qty})</b>\n\nPlease send the access key/account details for Item #1 below:", 
+        f"📝 <b>Delivery Required (Item 1 of {qty})</b>\n\nPlease send the details for Item #1 below OR upload a File:", 
         parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]])
     )
     await state.set_state(DeliveryState.waiting_for_key)
@@ -691,18 +691,87 @@ async def cancel_delivery(callback: CallbackQuery, state: FSMContext):
     await callback.message.delete()
     await callback.answer("Delivery Cancelled.")
 
+# 🟢 NEW: File Delivery Supported Here
 @router.message(DeliveryState.waiting_for_key)
 async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id): return
-    admin_key = message.text
     user_data = await state.get_data()
     
     order_id = user_data['order_id']
     prompt_msg_id = user_data['prompt_msg_id']
     current_num = user_data['current_item_num']
     total_qty = user_data['total_qty']
-    delivered_items = user_data['delivered_items']
+    delivered_items = user_data.get('delivered_items', [])
     
+    doc_ref = db.collection('pending_orders').document(order_id)
+    doc = doc_ref.get()
+    if not doc.exists or doc.to_dict().get('status') != 'pending':
+        await state.clear()
+        return await message.answer("❌ Error: Order not found or already processed.")
+        
+    data = doc.to_dict()
+    user_id = data.get('user_id')
+    product_id = data.get('product_id')
+    product_name = data.get('product_name')
+    
+    # 🟢 File Upload Logic for Bulk Delivery
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name
+        
+        delivery_caption = (
+            f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
+            f"🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n"
+            f"📦 <b>Package:</b> {product_name}\n"
+            f"🔢 <b>Quantity:</b> {total_qty}\n"
+            f"💰 <b>Total Price:</b> ${data.get('total_price')}\n\n"
+            f"📥 <i>Your items are inside the attached file.</i>\n"
+            f"➖➖➖➖➖➖➖➖➖➖"
+        )
+        buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{product_id}", style="success")]])
+        
+        try:
+            await bot.send_document(chat_id=user_id, document=file_id, caption=delivery_caption, parse_mode="HTML", reply_markup=buy_again_kb)
+        except Exception: pass
+        
+        db.collection('orders').document(order_id).set({
+            'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 
+            'product_id': product_id, 'product_name': product_name,
+            'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': [f"File Delivered: {file_name}"], 
+            'completed_by': 'Admin', 'timestamp': firestore.SERVER_TIMESTAMP
+        })
+        doc_ref.delete()
+        
+        # Send Real Sales Alert to Group
+        if MAIN_GROUPS_ID:
+            try:
+                str_uid = str(user_id)
+                masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}" if len(str_uid) > 4 else f"{str_uid[:1]}***{str_uid[-1:]}"
+                promo_text = (
+                    f"🎉 <b>New Order Placed!</b>\n\n"
+                    f"👤 User <code>{masked_uid}</code> just purchased:\n"
+                    f"🛍️ <b>{product_name}</b>\n"
+                    f"🔢 <b>Quantity:</b> {total_qty}\n\n"
+                    f"⚡️ <i>Delivered securely by Admin.</i>"
+                )
+                buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
+                buy_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]])
+                await bot.send_message(chat_id=MAIN_GROUPS_ID, text=promo_text, parse_mode="HTML", reply_markup=buy_btn)
+            except Exception: pass
+            
+        await state.clear()
+        try:
+            await message.delete()
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+            await message.answer(f"✅ Order Delivered Successfully via File ({file_name})!")
+        except Exception: pass
+        return
+
+    # 🟢 NORMAL TEXT DELIVERY LOGIC
+    admin_key = message.text
+    if not admin_key:
+        return await message.answer("❌ Please send text or a file.")
+        
     delivered_items.append(admin_key)
     
     if current_num < total_qty:
@@ -716,67 +785,47 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         )
         return
         
-    doc_ref = db.collection('pending_orders').document(order_id)
-    doc = doc_ref.get()
-    if doc.exists and doc.to_dict().get('status') == 'pending':
-        data = doc.to_dict()
-        user_id = data.get('user_id')
-        product_id = data.get('product_id')
-        product_name = data.get('product_name')
-        
-        delivery_text = (
-            f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
-            f"🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n"
-            f"📦 <b>Package:</b> {product_name}\n"
-            f"🔢 <b>Quantity:</b> {total_qty}\n"
-            f"💰 <b>Total Price:</b> ${data.get('total_price')}\n"
-            f"➖➖➖➖➖➖➖➖➖➖\n"
-        )
-        
-        for idx, item in enumerate(delivered_items, 1):
-            delivery_text += f"🛍️ <b>Item {idx}:</b>\n<code>{item}</code>\n\n"
-            
-        delivery_text += "➖➖➖➖➖➖➖➖➖➖\n"
-        
-        buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{product_id}", style="success")]])
-        
-        try: await bot.send_message(user_id, delivery_text, parse_mode="HTML", reply_markup=buy_again_kb)
+    delivery_text = (
+        f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n"
+        f"🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n"
+        f"📦 <b>Package:</b> {product_name}\n"
+        f"🔢 <b>Quantity:</b> {total_qty}\n"
+        f"💰 <b>Total Price:</b> ${data.get('total_price')}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+    )
+    for idx, item in enumerate(delivered_items, 1):
+        delivery_text += f"🛍️ <b>Item {idx}:</b>\n<code>{item}</code>\n\n"
+    delivery_text += "➖➖➖➖➖➖➖➖➖➖\n"
+    
+    buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{product_id}", style="success")]])
+    
+    try: await bot.send_message(user_id, delivery_text, parse_mode="HTML", reply_markup=buy_again_kb)
+    except Exception: pass
+    
+    db.collection('orders').document(order_id).set({
+        'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 
+        'product_id': product_id, 'product_name': product_name,
+        'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': delivered_items, 
+        'completed_by': 'Admin', 'timestamp': firestore.SERVER_TIMESTAMP
+    })
+    doc_ref.delete()
+    
+    # Send Real Sales Alert to Group
+    if MAIN_GROUPS_ID:
+        try:
+            str_uid = str(user_id)
+            masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}" if len(str_uid) > 4 else f"{str_uid[:1]}***{str_uid[-1:]}"
+            promo_text = (
+                f"🎉 <b>New Order Placed!</b>\n\n"
+                f"👤 User <code>{masked_uid}</code> just purchased:\n"
+                f"🛍️ <b>{product_name}</b>\n"
+                f"🔢 <b>Quantity:</b> {total_qty}\n\n"
+                f"⚡️ <i>Delivered securely by Admin.</i>"
+            )
+            buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
+            buy_btn = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]])
+            await bot.send_message(chat_id=MAIN_GROUPS_ID, text=promo_text, parse_mode="HTML", reply_markup=buy_btn)
         except Exception: pass
-        
-        db.collection('orders').document(order_id).set({
-            'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 
-            'product_id': product_id, 'product_name': product_name,
-            'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': delivered_items, 
-            'completed_by': 'Admin', 'timestamp': firestore.SERVER_TIMESTAMP
-        })
-        doc_ref.delete()
-        
-        # 🟢 রিয়েল সেলস অ্যালার্ট গ্রুপে পাঠানো
-        if MAIN_GROUPS_ID:
-            try:
-                str_uid = str(user_id)
-                masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}" if len(str_uid) > 4 else f"{str_uid[:1]}***{str_uid[-1:]}"
-                
-                promo_text = (
-                    f"🎉 <b>New Order Placed!</b>\n\n"
-                    f"👤 User <code>{masked_uid}</code> just purchased:\n"
-                    f"🛍️ <b>{product_name}</b>\n"
-                    f"🔢 <b>Quantity:</b> {total_qty}\n\n"
-                    f"⚡️ <i>Delivered securely by Admin.</i>"
-                )
-                
-                buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
-                buy_btn = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]
-                ])
-                
-                await bot.send_message(
-                    chat_id=MAIN_GROUPS_ID,
-                    text=promo_text,
-                    parse_mode="HTML",
-                    reply_markup=buy_btn
-                )
-            except Exception: pass
         
     await state.clear()
     try:
