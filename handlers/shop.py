@@ -30,7 +30,7 @@ async def show_categories(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = "🛒 <b>Shop Categories</b>\n\nPlease select a category:"
     
-    # বাটন আগে যেমন ছিল, ঠিক তেমনই রাখা হয়েছে
+    # বাটন আগে যেমন ছিল, ঠিক তেমনই রাখা হয়েছে, শুধু প্রক্সি চেকার অ্যাড করা হলো
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🌐 VPN", callback_data="showcat_vpn", style="primary"),
@@ -43,6 +43,10 @@ async def show_categories(callback: CallbackQuery, state: FSMContext):
         [
             InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders|0", style="primary"),
             InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", style="primary")
+        ],
+        # 🟢 NEW: Proxy Checker Button Added Here
+        [
+            InlineKeyboardButton(text="📡 Universal Proxy Checker", callback_data="check_proxy", style="success")
         ],
         [InlineKeyboardButton(text="◀️ Go Back", callback_data="back_to_main", style="danger")]
     ])
