@@ -5,3 +5,7 @@ python-binance
 pybit
 fastapi
 uvicorn
+aiohttp
+aiohttp_socks
+pandas
+openpyxl
