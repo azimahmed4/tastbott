@@ -122,6 +122,7 @@ class BroadcastState(StatesGroup):
     waiting_for_button = State()
     waiting_for_destination = State() 
     product_btn_id = State()
+    waiting_for_custom_btn = State() # 🟢 NEW STATE FOR CUSTOM BUTTON
 
 class PaymentSettingState(StatesGroup):
     waiting_for_new_value = State()
@@ -485,7 +486,7 @@ async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
     msg_text = f"🔥 <b>Available {cat_display} Packages</b> 🔥\n\n"
     
     for pid, details in products_dict.items():
-        if details.get('status', 'active') == 'active': # 🟢 Only show active products in list
+        if details.get('status', 'active') == 'active': 
             msg_text += f"✅ {details['name']} ➔ <b>${details['price']}</b>\n"
         
     msg_text += f"\n🛒 <i>Order now from our bot! @{BOT_USERNAME}</i>"
@@ -494,7 +495,7 @@ async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
     await callback.message.answer(msg_text, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
-# 💰 Deposit Approvals (FIXED SCREENSHOT & RESTART ISSUES)
+# 💰 Deposit Approvals 
 # ==========================================
 @router.callback_query(F.data == "admin_deposits")
 async def show_pending_deposits(callback: CallbackQuery):
@@ -512,7 +513,6 @@ async def show_pending_deposits(callback: CallbackQuery):
     text = "⏳ <b>Pending Deposits:</b>"
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    # 🟢 FIXED: ছবি থেকে লিস্টে ব্যাক করার সময় এরর এড়াতে
     try:
         if callback.message.photo or callback.message.document:
             await callback.message.delete()
@@ -549,7 +549,6 @@ async def view_single_deposit(callback: CallbackQuery):
         [InlineKeyboardButton(text="◀️ Back to List", callback_data="admin_deposits", style="primary")]
     ])
     
-    # 🟢 FIXED: ছবি থাকলে edit_caption, আর টেক্সট থাকলে edit_text ব্যবহার করবে
     try:
         if callback.message.photo or callback.message.document:
             await callback.message.edit_caption(caption=text, reply_markup=keyboard, parse_mode="HTML")
@@ -567,7 +566,6 @@ async def approve_deposit(callback: CallbackQuery, bot: Bot):
     doc_ref = db.collection('pending_deposits').document(trxid)
     doc = doc_ref.get()
     
-    # মেইন অ্যাডমিন প্যানেল লোড করার ফাংশন
     menu = await get_admin_menu()
     admin_text = "👨‍💻 <b>Admin Control Panel</b>\n\nSelect an action below:"
     
@@ -589,9 +587,8 @@ async def approve_deposit(callback: CallbackQuery, bot: Bot):
     except: pass
     
     await callback.answer("✅ Deposit Approved!", show_alert=True)
-    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
+    await callback.message.delete() 
     
-    # 🟢 NEW: মেসেজ গায়েব হওয়ার পর মেইন প্যানেল নিয়ে আসা
     await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("rejdep_"))
@@ -602,7 +599,6 @@ async def reject_deposit(callback: CallbackQuery, bot: Bot):
     doc_ref = db.collection('pending_deposits').document(trxid)
     doc = doc_ref.get()
     
-    # মেইন অ্যাডমিন প্যানেল লোড করার ফাংশন
     menu = await get_admin_menu()
     admin_text = "👨‍💻 <b>Admin Control Panel</b>\n\nSelect an action below:"
     
@@ -620,9 +616,8 @@ async def reject_deposit(callback: CallbackQuery, bot: Bot):
     except: pass
     
     await callback.answer("❌ Deposit Rejected!", show_alert=True)
-    await callback.message.delete() # ছবিসহ রিকোয়েস্ট ডিলিট
+    await callback.message.delete() 
     
-    # 🟢 NEW: মেসেজ গায়েব হওয়ার পর মেইন প্যানেল নিয়ে আসা
     await callback.message.answer(admin_text, reply_markup=menu, parse_mode="HTML")
 
 # ==========================================
@@ -691,7 +686,6 @@ async def cancel_delivery(callback: CallbackQuery, state: FSMContext):
     await callback.message.delete()
     await callback.answer("Delivery Cancelled.")
 
-# 🟢 NEW: File Delivery Supported Here
 @router.message(DeliveryState.waiting_for_key)
 async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id): return
@@ -963,7 +957,7 @@ async def edit_product_menu(callback: CallbackQuery):
     status_text = "🟢 Active" if current_status == 'active' else "🔴 Paused (Out of Stock)"
     toggle_btn_text = "🔴 Pause Product" if current_status == 'active' else "🟢 Make Active"
     
-    # 🟢 NEW: Promo Mute check
+    # Promo Mute check
     is_muted = product.get('promo_muted', False)
     promo_btn_text = "🔊 Promo On" if is_muted else "🔕 Mute Promo"
     
@@ -980,13 +974,12 @@ async def edit_product_menu(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="primary"), InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_status|{prod_id}", style="primary")],
-        # 🟢 NEW: Mute Promo Button Added
         [InlineKeyboardButton(text=promo_btn_text, callback_data=f"mutepromo|{prod_id}", style="primary"), InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger")],
         [InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🟢 NEW: Toggle Promo Mute
+# Toggle Promo Mute
 @router.callback_query(F.data.startswith("mutepromo|"))
 async def toggle_promo_mute(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -1280,7 +1273,7 @@ async def save_product_to_db(message: Message, state: FSMContext, bot: Bot, desc
         'product_id': new_prod_id, 'category': data['prod_category'], 'sub_category': data['prod_subcat'],
         'name': data['prod_name'], 'price': price, 'delivery_type': 'manual', 'stock': [],
         'status': 'active', 
-        'promo_muted': False, # 🟢 NEW: Default is False
+        'promo_muted': False,
         'updated_at': firestore.SERVER_TIMESTAMP
     }
     if desc:
@@ -1342,7 +1335,6 @@ async def search_user_result(message: Message, state: FSMContext):
         f"💰 <b>Balance:</b> ${user_info.get('balance', 0.0):.2f}\n"
         f"💸 <b>Spent:</b> ${user_info.get('total_spent', 0.0):.2f}"
     )
-    # 🟢 NEW: Clear Test Data Button Added Here
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Add Balance", callback_data=f"addbal_{target_uid}", style="success"), InlineKeyboardButton(text="➖ Deduct Balance", callback_data=f"dedbal_{target_uid}", style="danger")],
         [InlineKeyboardButton(text="🧹 Clear Test Data", callback_data=f"cleardata_{target_uid}", style="danger")],
@@ -1350,7 +1342,6 @@ async def search_user_result(message: Message, state: FSMContext):
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
-# 🟢 NEW: Clear Test Data Function
 @router.callback_query(F.data.startswith("cleardata_"))
 async def clear_test_data(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -1358,24 +1349,19 @@ async def clear_test_data(callback: CallbackQuery):
     
     if not db: return await callback.answer("Database Error")
     
-    # 1. Reset balance & spent
     db.collection('users').document(str(target_uid)).update({'balance': 0.0, 'total_spent': 0.0})
     
-    # 2. Delete Orders
     orders = db.collection('orders').where('user_id', '==', int(target_uid)).stream()
     for doc in orders: doc.reference.delete()
         
-    # 3. Delete Pending Orders
     p_orders = db.collection('pending_orders').where('user_id', '==', int(target_uid)).stream()
     for doc in p_orders: doc.reference.delete()
         
-    # 4. Delete Deposit History
     deposits = db.collection('deposit_history').where('user_id', '==', int(target_uid)).stream()
     for doc in deposits: doc.reference.delete()
         
     await callback.answer(f"✅ All Test Orders & Deposits cleared for User {target_uid}!", show_alert=True)
     
-    # Refresh screen
     message = callback.message
     message.text = target_uid
     message.from_user = callback.from_user
@@ -1415,7 +1401,7 @@ async def process_balance_change(message: Message, state: FSMContext, bot: Bot):
     await message.answer(f"✅ <b>Success!</b>\n\n👤 <b>User:</b> <code>{target_uid}</code>\n💰 <b>New Balance:</b> ${new_balance:.2f}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
 
 # ==========================================
-# 📢 BROADCAST MESSAGE (Users & Channel Control)
+# 📢 BROADCAST MESSAGE (🟢 UPDATED: Custom Buttons & Menu)
 # ==========================================
 @router.callback_query(F.data == "admin_broadcast")
 async def broadcast_start(callback: CallbackQuery, state: FSMContext):
@@ -1427,31 +1413,84 @@ async def broadcast_start(callback: CallbackQuery, state: FSMContext):
 async def receive_broadcast_message(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
     await state.update_data(msg_id=message.message_id, from_chat_id=message.chat.id)
+    await show_broadcast_button_menu(message, state)
+
+@router.callback_query(BroadcastState.waiting_for_button, F.data == "bc_back_to_btn_menu")
+@router.callback_query(BroadcastState.waiting_for_custom_btn, F.data == "bc_back_to_btn_menu")
+async def back_to_broadcast_button_menu(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
+    await show_broadcast_button_menu(callback.message, state, is_callback=True)
+
+async def show_broadcast_button_menu(message_or_callback, state: FSMContext, is_callback=False):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭️ Send Without Button", callback_data="bc_btn|none", style="success")],
+        [
+            InlineKeyboardButton(text="🤖 Open Bot (Start)", callback_data="bc_btn|start", style="primary"),
+            InlineKeyboardButton(text="🛒 Open Shop", callback_data="bc_btn|shop", style="primary")
+        ],
+        [InlineKeyboardButton(text="➕ Custom Link Button", callback_data="bc_custom_btn", style="primary")],
+        [InlineKeyboardButton(text="🛍️ Attach a Product", callback_data="bc_list_prods", style="primary")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin", style="danger")]
+    ])
+    await state.set_state(BroadcastState.waiting_for_button)
+    
+    text = "🎯 <b>What kind of button do you want to attach?</b>"
+    if is_callback:
+        await message_or_callback.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await message_or_callback.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+@router.callback_query(BroadcastState.waiting_for_button, F.data == "bc_list_prods")
+async def show_product_list_for_broadcast(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
     keyboard = []
     if db:
         for doc in db.collection('products').stream():
             details = doc.to_dict()
-            keyboard.append([InlineKeyboardButton(text=f"🔗 Attach: {details['name']}", callback_data=f"bc_btn|{doc.id}", style="primary")])
-            
-    keyboard.append([InlineKeyboardButton(text="⏭️ Send Without Button", callback_data="bc_btn|none", style="primary")])
-    keyboard.append([InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin", style="danger")])
-    await state.set_state(BroadcastState.waiting_for_button)
-    await message.answer("🛒 <b>Attach a Product Button?</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+            keyboard.append([InlineKeyboardButton(text=f"🔗 Attach: {details['name']}", callback_data=f"bc_btn|prod_{doc.id}", style="primary")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="bc_back_to_btn_menu", style="danger")])
+    await callback.message.edit_text("🛒 <b>Select a product to attach:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+@router.callback_query(BroadcastState.waiting_for_button, F.data == "bc_custom_btn")
+async def ask_custom_button(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
+    await state.set_state(BroadcastState.waiting_for_custom_btn)
+    await callback.message.edit_text(
+        "📝 <b>Send button details:</b>\n"
+        "Format: <code>Button Text - https://link.com</code>\n\n"
+        "Example:\n<code>Join Channel - https://t.me/mychannel</code>", 
+        parse_mode="HTML", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data="bc_back_to_btn_menu", style="danger")]])
+    )
+
+@router.message(BroadcastState.waiting_for_custom_btn)
+async def process_custom_button(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    if " - " not in message.text:
+        return await message.answer("❌ Invalid format! Use: <code>Text - URL</code>", parse_mode="HTML")
+    await state.update_data(product_btn_id=f"custom|{message.text}")
+    await ask_broadcast_destination_msg(message, state)
 
 @router.callback_query(BroadcastState.waiting_for_button, F.data.startswith("bc_btn|"))
-async def ask_broadcast_destination(callback: CallbackQuery, state: FSMContext):
+async def ask_broadcast_destination_cb(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
-    prod_id = callback.data.split("|")[1]
-    await state.update_data(product_btn_id=prod_id)
+    btn_type = callback.data.split("|")[1]
+    await state.update_data(product_btn_id=btn_type)
+    await ask_broadcast_destination_msg(callback.message, state, is_callback=True)
+
+async def ask_broadcast_destination_msg(message_or_callback, state: FSMContext, is_callback=False):
     await state.set_state(BroadcastState.waiting_for_destination)
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Users Only", callback_data="bc_dest|users", style="primary")],
         [InlineKeyboardButton(text="📢 Channel Only", callback_data="bc_dest|channel", style="primary")],
         [InlineKeyboardButton(text="🌍 Send to Both", callback_data="bc_dest|both", style="success")],
         [InlineKeyboardButton(text="❌ Cancel", callback_data="back_to_admin", style="danger")]
     ])
-    await callback.message.edit_text("🎯 <b>Where do you want to send this broadcast?</b>", reply_markup=keyboard, parse_mode="HTML")
+    text = "🎯 <b>Where do you want to send this broadcast?</b>"
+    if is_callback:
+        await message_or_callback.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await message_or_callback.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 @router.callback_query(BroadcastState.waiting_for_destination, F.data.startswith("bc_dest|"))
 async def execute_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -1461,14 +1500,25 @@ async def execute_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
     user_data = await state.get_data()
     msg_id = user_data['msg_id']
     from_chat_id = user_data['from_chat_id']
-    prod_id = user_data['product_btn_id']
+    btn_data = user_data.get('product_btn_id', 'none')
     
     reply_markup = None
-    if prod_id != "none" and db:
-        product = db.collection('products').document(prod_id).get().to_dict()
-        if product:
-            url_btn = InlineKeyboardButton(text=f"🛒 Buy {product['name']} - ${product['price']}", url=f"https://t.me/{BOT_USERNAME}?start=buy_{prod_id}")
-            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[url_btn]])
+    if btn_data != "none":
+        if btn_data == "start":
+            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤖 Open Bot", url=f"https://t.me/{BOT_USERNAME}")]])
+        elif btn_data == "shop":
+            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Open Shop", url=f"https://t.me/{BOT_USERNAME}")]]) # start=shop may not be handled in your bot natively, so keeping it safe
+        elif btn_data.startswith("custom|"):
+            custom_data = btn_data.split("custom|")[1]
+            text, url = custom_data.split(" - ", 1)
+            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text.strip(), url=url.strip())]])
+        elif btn_data.startswith("prod_"):
+            prod_id = btn_data.split("prod_")[1]
+            if db:
+                product = db.collection('products').document(prod_id).get().to_dict()
+                if product:
+                    url_btn = InlineKeyboardButton(text=f"🛒 Buy {product['name']} - ${product['price']}", url=f"https://t.me/{BOT_USERNAME}?start=buy_{prod_id}")
+                    reply_markup = InlineKeyboardMarkup(inline_keyboard=[[url_btn]])
             
     await state.clear()
     await callback.message.edit_text("⏳ <b>Broadcasting...</b>\nPlease wait.")
