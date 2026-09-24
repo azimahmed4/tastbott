@@ -22,7 +22,6 @@ ORDERS_PER_PAGE = 3
 class InvoiceSearchState(StatesGroup):
     waiting_for_invoice = State()
 
-# 🟢 NEW: Custom Quantity State
 class CustomQtyState(StatesGroup):
     waiting_for_qty = State()
 
@@ -34,7 +33,6 @@ async def show_categories(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = "🛒 <b>Shop Categories</b>\n\nPlease select a category:"
     
-    # বাটন আগে যেমন ছিল, ঠিক তেমনই রাখা হয়েছে, শুধু প্রক্সি চেকার অ্যাড করা হলো
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🌐 VPN", callback_data="showcat_vpn", style="primary"),
@@ -168,12 +166,13 @@ async def show_subcategories_or_products(callback: CallbackQuery):
         subcats = await get_subcategories(cat)
         keyboard = []
         for i in range(0, len(subcats), 2):
-            row = [InlineKeyboardButton(text=f"📁 {subcats[i]['name']}", callback_data=f"shop_p|{cat}|{subcats[i]['subcat_id']}|0")]
+            # 🟢 FIXED: ফোল্ডার আইকন রিমুভ করে স্টাইল প্রাইমারি অ্যাড করা হলো
+            row = [InlineKeyboardButton(text=f"{subcats[i]['name']}", callback_data=f"shop_p|{cat}|{subcats[i]['subcat_id']}|0", style="primary")]
             if i + 1 < len(subcats):
-                row.append(InlineKeyboardButton(text=f"📁 {subcats[i+1]['name']}", callback_data=f"shop_p|{cat}|{subcats[i+1]['subcat_id']}|0"))
+                row.append(InlineKeyboardButton(text=f"{subcats[i+1]['name']}", callback_data=f"shop_p|{cat}|{subcats[i+1]['subcat_id']}|0", style="primary"))
             keyboard.append(row)
             
-        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="menu_buy")])
+        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="menu_buy", style="danger")])
         await callback.message.edit_text(f"📁 <b>Select Validity/Type:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
     else:
         await display_products(callback, cat, "none", 0)
@@ -255,7 +254,6 @@ async def update_quantity(callback: CallbackQuery):
     if qty < 1: qty = 1
     await show_quantity_selector(callback, prod_id, qty)
 
-# 🟢 NEW: Custom Quantity Handlers
 @router.callback_query(F.data.startswith("customqty_"))
 async def ask_custom_qty(callback: CallbackQuery, state: FSMContext):
     prod_id = callback.data.split("_", 1)[1]
@@ -276,10 +274,8 @@ async def process_custom_qty(message: Message, state: FSMContext):
     prod_id = data.get('custom_prod_id')
     await state.clear()
     
-    # 🟢 কলব্যাকের বদলে মেসেজ ইভেন্ট পাস করা হলো
     await show_quantity_selector(message, prod_id, qty)
 
-# 🟢 MODIFIED: Supports both Message and CallbackQuery 
 async def show_quantity_selector(event, prod_id: str, qty: int):
     is_callback = isinstance(event, CallbackQuery)
     
@@ -313,16 +309,16 @@ async def show_quantity_selector(event, prod_id: str, qty: int):
         f"🔢 <b>Quantity:</b> {qty}\n"
         f"💰 <b>Total Price:</b> ${total_price}\n"
         f"💵 <b>Your Wallet:</b> ${wallet_balance:.2f}\n\n"
-        "<i>Use +/- buttons or click the middle button to enter custom quantity:</i>"
+        "<i>Use +/- buttons or click 'Enter quantity' for custom order:</i>"
     )
     
-    # 🟢 NEW: Custom Quantity বাটন যুক্ত করা হলো
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="➖", callback_data=f"setqty_{qty-1}_{prod_id}"),
-            InlineKeyboardButton(text=f" ✏️ {qty} (Custom) ", callback_data=f"customqty_{prod_id}"),
-            InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}")
+            InlineKeyboardButton(text="➖", callback_data=f"setqty_{qty-1}_{prod_id}", style="danger"),
+            InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty", style="primary"),
+            InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}", style="success")
         ],
+        [InlineKeyboardButton(text="Enter quantity", callback_data=f"customqty_{prod_id}", style="primary")],
         [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}", style="success")],
         [InlineKeyboardButton(text="📝 View Note", callback_data=f"view_note_{prod_id}", style="primary")],
         [InlineKeyboardButton(text="◀️ Cancel", callback_data=back_btn, style="danger")]
