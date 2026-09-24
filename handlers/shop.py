@@ -129,7 +129,6 @@ async def start_buy(callback: CallbackQuery):
     if not product: return await callback.answer("❌ Error: Product not found!", show_alert=True)
     if product.get('status') == 'paused': return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
     
-    # 🟢 NEW: Start with min_qty instead of 1
     min_qty = product.get('min_qty', 1)
     await show_quantity_selector(callback, prod_id, min_qty)
     
@@ -139,7 +138,6 @@ async def buy_again_shortcut(callback: CallbackQuery):
     product = await get_product(prod_id)
     if product and product.get('status') == 'paused': return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
     
-    # 🟢 FIXED: Buy Again will send a NEW message instead of editing the delivery text
     min_qty = product.get('min_qty', 1)
     await show_quantity_selector(callback, prod_id, min_qty, edit_msg=False)
 
@@ -148,10 +146,12 @@ async def update_quantity(callback: CallbackQuery):
     parts = callback.data.split("_")
     qty, prod_id = int(parts[1]), "_".join(parts[2:])
     
-    # 🟢 ENFORCE MOQ ON +/- BUTTONS
+    # 🟢 FIXED: মাইনাস বাটনে ক্লিক করলে মিনিমাম কোয়ান্টিটির নিচে গেলে অ্যালার্ট দেবে
     product = await get_product(prod_id)
     min_qty = product.get('min_qty', 1) if product else 1
-    if qty < min_qty: qty = min_qty
+    
+    if qty < min_qty: 
+        return await callback.answer(f"⚠️ You must buy at least {min_qty} pieces!", show_alert=True)
     
     await show_quantity_selector(callback, prod_id, qty)
 
@@ -170,7 +170,6 @@ async def process_custom_qty(message: Message, state: FSMContext):
     data = await state.get_data()
     prod_id = data.get('custom_prod_id')
     
-    # 🟢 ENFORCE MOQ ON CUSTOM INPUT
     product = await get_product(prod_id)
     min_qty = product.get('min_qty', 1) if product else 1
     if qty < min_qty:
@@ -179,27 +178,54 @@ async def process_custom_qty(message: Message, state: FSMContext):
     await state.clear()
     await show_quantity_selector(message, prod_id, qty)
 
-# 🟢 MODIFIED: edit_msg parameter added to handle "Buy Again" perfectly
-async def show_quantity_selector(event, prod_id: str, qty: int, edit_msg: bool = True):
+async def show_quantity_selector(event, prod_id: str, qty: int = 0, edit_msg: bool = True):
     is_callback = isinstance(event, CallbackQuery)
-    product = await get_product(prod_id)
-    if not product: return await event.answer("❌ Error: Product not found!", show_alert=True) if is_callback else await event.answer("❌ Error: Product not found!")
-    if product.get('status') == 'paused': return await event.answer("❌ This product is currently Out of Stock!", show_alert=True) if is_callback else await event.answer("❌ This product is currently Out of Stock!")
     
-    user_doc = db.collection('users').document(str(event.from_user.id)).get() if db else None
-    wallet_balance = user_doc.to_dict().get('balance', 0.0) if user_doc and user_doc.exists else 0.0
+    product = await get_product(prod_id)
+    if not product:
+        msg = "❌ Error: Product not found!"
+        return await event.answer(msg, show_alert=True) if is_callback else await event.answer(msg)
+        
+    if product.get('status') == 'paused':
+        msg = "❌ This product is currently Out of Stock!"
+        return await event.answer(msg, show_alert=True) if is_callback else await event.answer(msg)
+    
+    # 🟢 AUTO-SNAP QTY TO MIN_QTY (চ্যানেল থেকে ডিরেক্ট ক্লিক করলে যেন অটোমেটিক ফিক্স হয়)
+    min_qty = product.get('min_qty', 1)
+    if qty < min_qty:
+        qty = min_qty
+    
+    user_id = str(event.from_user.id)
+    wallet_balance = 0.0
+    if db:
+        user_doc = db.collection('users').document(user_id).get()
+        if user_doc.exists:
+            wallet_balance = user_doc.to_dict().get('balance', 0.0)
 
     total_price = round(product['price'] * qty, 2)
     cat, subcat = product.get('category', 'vpn'), product.get('sub_category', 'none')
     back_btn = f"shop_p|{cat}|{subcat}|0" if subcat and subcat != "none" else f"showcat_{cat}"
     
-    min_qty_text = f"\n📉 <i>Min. Order Quantity: {product.get('min_qty', 1)}</i>" if product.get('min_qty', 1) > 1 else ""
+    min_qty_text = f"\n📉 <i>Min. Order Quantity: {min_qty}</i>" if min_qty > 1 else ""
     
-    text = (f"🛒 <b>Order Summary</b>\n\n📦 <b>Product:</b> {product['name']}\n💲 <b>Unit Price:</b> ${product['price']}\n➖➖➖➖➖➖➖➖➖➖\n"
-            f"🔢 <b>Quantity:</b> {qty}\n💰 <b>Total Price:</b> ${total_price}\n💵 <b>Your Wallet:</b> ${wallet_balance:.2f}\n{min_qty_text}\n\n<i>Use +/- buttons or click 'Enter quantity' for custom order:</i>")
-            
+    text = (
+        f"🛒 <b>Order Summary</b>\n\n"
+        f"📦 <b>Product:</b> {product['name']}\n"
+        f"💲 <b>Unit Price:</b> ${product['price']}\n"
+        "➖➖➖➖➖➖➖➖➖➖\n"
+        f"🔢 <b>Quantity:</b> {qty}\n"
+        f"💰 <b>Total Price:</b> ${total_price}\n"
+        f"💵 <b>Your Wallet:</b> ${wallet_balance:.2f}\n"
+        f"{min_qty_text}\n\n"
+        "<i>Use +/- buttons or click 'Enter quantity' for custom order:</i>"
+    )
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➖", callback_data=f"setqty_{qty-1}_{prod_id}", style="danger"), InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty", style="primary"), InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}", style="success")],
+        [
+            InlineKeyboardButton(text="➖", callback_data=f"setqty_{qty-1}_{prod_id}", style="danger"),
+            InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty", style="primary"),
+            InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}", style="success")
+        ],
         [InlineKeyboardButton(text="Enter quantity", callback_data=f"customqty_{prod_id}", style="primary")],
         [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}", style="success")],
         [InlineKeyboardButton(text="📝 View Note", callback_data=f"view_note_{prod_id}", style="primary")],
@@ -209,12 +235,14 @@ async def show_quantity_selector(event, prod_id: str, qty: int, edit_msg: bool =
     try: 
         if is_callback:
             if edit_msg: await event.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-            else: await event.message.answer(text, reply_markup=keyboard, parse_mode="HTML") # For Buy Again
-        else: await event.answer(text, reply_markup=keyboard, parse_mode="HTML")
+            else: await event.message.answer(text, reply_markup=keyboard, parse_mode="HTML") 
+        else:
+            await event.answer(text, reply_markup=keyboard, parse_mode="HTML")
     except: pass 
 
 @router.callback_query(F.data == "ignore_qty")
-async def ignore_qty_click(callback: CallbackQuery): await callback.answer("Use + or - to change quantity.")
+async def ignore_qty_click(callback: CallbackQuery):
+    await callback.answer("Use + or - to change quantity.")
 
 @router.callback_query(F.data.startswith("view_note_"))
 async def show_product_note(callback: CallbackQuery):
@@ -226,3 +254,4 @@ async def show_product_note(callback: CallbackQuery):
         "<b>Note:</b>\n<blockquote>✅ OFFICIAL ACTIVATION LINK / KEY\n✅ SELF REDEEM / SELF ACTIVATION\n✅ WORKS ON PERSONAL ACCOUNTS\n✅ SUPPORTS ALL DEVICES\n✅ NO ACCOUNT SHARING REQUIRED\n❌ NO WARRANTY IF RULES BROKEN\n❌ MUST BE CLAIMED WITHIN 24 HOURS\n❌ LOGIN MUST ON JUST 1 DEVICE TRY TO DON'T USE MULTIPLE.\n⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️\n<i>DO NOT OPEN THE LINK JUST TO CHECK. IF YOU DO, IT WILL BECOME INVALID.</i></blockquote>")
 
     await callback.message.edit_text(f"📦 <b>{product['name']}</b>\n\n{note_content}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Purchase", callback_data=f"buy_{prod_id}", style="primary")]]), parse_mode="HTML")
+    
