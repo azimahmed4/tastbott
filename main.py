@@ -20,6 +20,7 @@ from handlers.wallet import router as wallet_router
 from handlers.admin import router as admin_router
 from handlers.profile import router as profile_router 
 from handlers.others import router as others_router 
+from handlers.proxy_checker import router as proxy_checker_router
 
 # ==========================================
 # 🟢 হেল্পার ফাংশন: ফেক সেল মেসেজ (কোয়ান্টিটি সহ)
@@ -164,6 +165,7 @@ async def main():
     dp.include_router(profile_router)
     dp.include_router(others_router)
     dp.include_router(admin_router)
+    dp.include_router(proxy_checker_router)
 
     print("✅ বট সফলভাবে চালু হয়েছে!")
     print("🛡️ Server Crash Protection Activated.")
