@@ -22,6 +22,10 @@ ORDERS_PER_PAGE = 3
 class InvoiceSearchState(StatesGroup):
     waiting_for_invoice = State()
 
+# 🟢 NEW: Custom Quantity State
+class CustomQtyState(StatesGroup):
+    waiting_for_qty = State()
+
 # ==========================================
 # 🛒 SHOP MAIN MENU (Clean & Original)
 # ==========================================
@@ -44,7 +48,6 @@ async def show_categories(callback: CallbackQuery, state: FSMContext):
             InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders|0", style="primary"),
             InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", style="primary")
         ],
-        # 🟢 NEW: Proxy Checker Button Added Here
         [
             InlineKeyboardButton(text="📡 All Proxy Checker", callback_data="check_proxy", style="success")
         ],
@@ -84,11 +87,9 @@ async def view_my_orders(callback: CallbackQuery):
             f"📊 <b>Status:</b> {status}\n"
         )
         
-        # 🟢 NEW: ডেলিভারি ডিটেইলস (Credentials) অর্ডারের সাথে দেখানো হচ্ছে
         if 'items_delivered' in o and o['items_delivered']:
             text += f"🎁 <b>Delivery Details:</b>\n"
             for item in o['items_delivered']:
-                # কোড ব্লকে রাখছি যাতে ইউজার এক ক্লিকে কপি করতে পারে
                 text += f"<code>{item}</code>\n"
                 
         text += f"➖➖➖➖➖➖➖➖\n"
@@ -148,7 +149,6 @@ async def process_invoice_search(message: Message, state: FSMContext):
         f"🛡️ <b>Completed by:</b> {order.get('completed_by', 'System' if 'items_delivered' in order else 'Pending')}\n"
     )
     
-    # 🟢 NEW: ট্র্যাক ইনভয়েসেও ডেলিভারি ডিটেইলস (Credentials) দেখানো হচ্ছে
     if 'items_delivered' in order and order['items_delivered']:
         text += f"\n🎁 <b>Delivery Details:</b>\n"
         for item in order['items_delivered']:
@@ -223,7 +223,7 @@ async def display_products(callback: CallbackQuery, cat: str, subcat: str, page:
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
 # ==========================================
-# 🛒 BUYING PROCESS (Simple + View Note + Wallet)
+# 🛒 BUYING PROCESS (With Custom Bulk Qty)
 # ==========================================
 @router.callback_query(F.data.startswith("buy_"))
 async def start_buy(callback: CallbackQuery):
@@ -255,15 +255,44 @@ async def update_quantity(callback: CallbackQuery):
     if qty < 1: qty = 1
     await show_quantity_selector(callback, prod_id, qty)
 
-async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int):
+# 🟢 NEW: Custom Quantity Handlers
+@router.callback_query(F.data.startswith("customqty_"))
+async def ask_custom_qty(callback: CallbackQuery, state: FSMContext):
+    prod_id = callback.data.split("_", 1)[1]
+    await state.update_data(custom_prod_id=prod_id)
+    await state.set_state(CustomQtyState.waiting_for_qty)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"buy_{prod_id}")]])
+    await callback.message.edit_text("🔢 <b>Enter the quantity you want to buy:</b>\n<i>(e.g., 50 or 100)</i>", reply_markup=keyboard, parse_mode="HTML")
+
+@router.message(CustomQtyState.waiting_for_qty)
+async def process_custom_qty(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("❌ Invalid number. Please enter a valid quantity.")
+    qty = int(message.text)
+    if qty < 1: qty = 1
+    
+    data = await state.get_data()
+    prod_id = data.get('custom_prod_id')
+    await state.clear()
+    
+    # 🟢 কলব্যাকের বদলে মেসেজ ইভেন্ট পাস করা হলো
+    await show_quantity_selector(message, prod_id, qty)
+
+# 🟢 MODIFIED: Supports both Message and CallbackQuery 
+async def show_quantity_selector(event, prod_id: str, qty: int):
+    is_callback = isinstance(event, CallbackQuery)
+    
     product = await get_product(prod_id)
     if not product:
-        return await callback.answer("❌ Error: Product not found!", show_alert=True)
+        msg = "❌ Error: Product not found!"
+        return await event.answer(msg, show_alert=True) if is_callback else await event.answer(msg)
         
     if product.get('status') == 'paused':
-        return await callback.answer("❌ This product is currently Out of Stock!", show_alert=True)
+        msg = "❌ This product is currently Out of Stock!"
+        return await event.answer(msg, show_alert=True) if is_callback else await event.answer(msg)
     
-    user_id = str(callback.from_user.id)
+    user_id = str(event.from_user.id)
     wallet_balance = 0.0
     if db:
         user_doc = db.collection('users').document(user_id).get()
@@ -284,13 +313,14 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
         f"🔢 <b>Quantity:</b> {qty}\n"
         f"💰 <b>Total Price:</b> ${total_price}\n"
         f"💵 <b>Your Wallet:</b> ${wallet_balance:.2f}\n\n"
-        "<i>Use the + and - buttons to adjust quantity:</i>"
+        "<i>Use +/- buttons or click the middle button to enter custom quantity:</i>"
     )
     
+    # 🟢 NEW: Custom Quantity বাটন যুক্ত করা হলো
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="➖", callback_data=f"setqty_{qty-1}_{prod_id}"),
-            InlineKeyboardButton(text=f" {qty} ", callback_data="ignore_qty"),
+            InlineKeyboardButton(text=f" ✏️ {qty} (Custom) ", callback_data=f"customqty_{prod_id}"),
             InlineKeyboardButton(text="➕", callback_data=f"setqty_{qty+1}_{prod_id}")
         ],
         [InlineKeyboardButton(text="✅ Confirm & Pay", callback_data=f"pay_{qty}_{prod_id}", style="success")],
@@ -298,7 +328,11 @@ async def show_quantity_selector(callback: CallbackQuery, prod_id: str, qty: int
         [InlineKeyboardButton(text="◀️ Cancel", callback_data=back_btn, style="danger")]
     ])
     
-    try: await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    try: 
+        if is_callback:
+            await event.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            await event.answer(text, reply_markup=keyboard, parse_mode="HTML")
     except: pass 
 
 @router.callback_query(F.data == "ignore_qty")
