@@ -10,7 +10,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from firebase_admin import firestore
-from google.cloud.firestore import FieldFilter  # 🟢 NEW: Firestore Error Fix
+from google.cloud.firestore import FieldFilter  
 from binance.client import Client  
 from pybit.unified_trading import HTTP  
 
@@ -44,14 +44,13 @@ if BYBIT_API_KEY and BYBIT_SECRET_KEY:
     masked_key = BYBIT_API_KEY[:5] + "********"
     print(f"✅ [SUCCESS] Bybit API Keys loaded! (Key: {masked_key})")
 else:
-    print("⚠️ [WARNING] Bybit API Keys MISSING! Auto-Verify won't work.")
+    print("⚠️️ [WARNING] Bybit API Keys MISSING! Auto-Verify won't work.")
 
 # ==========================================
 # 📌 States
 # ==========================================
 class DepositState(StatesGroup):
     waiting_for_amount = State()         
-    # 🟢 REMOVED: waiting_for_sender State রিমুভ করা হয়েছে
     waiting_for_trxid = State()          
     waiting_for_crypto_trxid = State()   
     waiting_for_screenshot = State()     
@@ -131,7 +130,28 @@ async def process_deposit_method(callback: CallbackQuery, state: FSMContext):
         await state.update_data(payment_method=method_name, method_key=m_key, method_type="local")
         await state.set_state(DepositState.waiting_for_amount)
         
-        instruction = (f"📱 <b>{method_name} (Auto Verification)</b>\n\n💰 <b>Minimum Deposit:</b> 20 BDT\n\n⚠️ <b>How much money do you want to deposit?</b>\n<i>(Type the amount in BDT below. Example: 100)</i>")
+        admin_number = method_info.get("number", "Unknown")
+        
+        if m_key.lower() == "bkash":
+            instruction = (
+                f"📱 <b>{method_name} (Auto Verification)</b>\n\n"
+                f"💰 <b>Minimum Deposit:</b> 20 BDT\n"
+                f"📲 <b>Number:</b> <code>{admin_number}</code>\n\n"
+                f"⚠️ <b>How to deposit:</b>\n"
+                f"🇬🇧 Please make a <b>Payment</b> to the number above.\n"
+                f"🇧🇩 উপরের নাম্বারে <b>Payment (পেমেন্ট)</b> করুন (সেন্ড মানি নয়)।\n\n"
+                f"⚠️ <b>How much money do you want to deposit?</b>\n"
+                f"<i>(Type the amount in BDT below. Example: 100)</i>"
+            )
+        else:
+            instruction = (
+                f"📱 <b>{method_name} (Auto Verification)</b>\n\n"
+                f"💰 <b>Minimum Deposit:</b> 20 BDT\n"
+                f"📲 <b>Number:</b> <code>{admin_number}</code>\n\n"
+                f"⚠️ <b>How much money do you want to deposit?</b>\n"
+                f"<i>(Type the amount in BDT below. Example: 100)</i>"
+            )
+            
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
         await callback.message.edit_text(instruction, reply_markup=keyboard, parse_mode="HTML")
 
@@ -171,7 +191,24 @@ def verify_crypto_pay(trx_id: str, platform: str):
             if "Way too much request weight" in str(e) or "-1003" in str(e): return {"status": "failed", "message": "Binance server is busy."}
             return {"status": "error", "message": str(e)}
 
-    elif platform in ["bybit", "bybitaddress"]:
+    elif platform == "bybitaddress":
+        # 🟢 CHANGED: bybitaddress অপশনে এখন বাইনান্সের ডিপোজিট এপিআই কল হবে
+        if not BINANCE_API_KEY or not BINANCE_SECRET_KEY: return {"status": "error", "message": "Binance API keys not set."}
+        try:
+            client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+            deposits = client.get_deposit_history()
+            for tx in deposits:
+                if tx.get('txId') == trx_id:
+                    if tx.get('status') == 1: 
+                        return {"status": "success", "amount": float(tx.get('amount', 0)), "currency": tx.get('coin', 'USDT')}
+                    else: 
+                        return {"status": "failed", "message": "Network Transaction is not fully confirmed yet."}
+            return {"status": "failed", "message": "Transaction not found on network."}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    elif platform == "bybit":
+        # Bybit UID Transfer Logic remains unchanged
         if not BYBIT_API_KEY or not BYBIT_SECRET_KEY: return {"status": "error", "message": "Bybit API keys not set."}
         try:
             session = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_SECRET_KEY)
@@ -181,12 +218,6 @@ def verify_crypto_pay(trx_id: str, platform: str):
                     if tx.get('txID') == trx_id:
                         if tx.get('status') == 2: return {"status": "success", "amount": float(tx.get('amount', 0)), "currency": tx.get('coin', 'USDT')}
                         else: return {"status": "failed", "message": "Transaction is still Processing."}
-            deposit_res = session.get_deposit_records(limit=50)
-            if deposit_res.get('retCode') == 0 and 'result' in deposit_res and 'rows' in deposit_res['result']:
-                for tx in deposit_res['result']['rows']:
-                    if tx.get('txID') == trx_id:
-                        if tx.get('status') == 3: return {"status": "success", "amount": float(tx.get('amount', 0)), "currency": tx.get('coin', 'USDT')}
-                        else: return {"status": "failed", "message": "Network Transaction is not confirmed yet."}
             return {"status": "failed", "message": "Transaction not found on network."}
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -238,8 +269,6 @@ async def receive_amount(message: Message, state: FSMContext):
     if amount < 20: return await message.answer("⚠️ <b>Minimum deposit amount is 20 BDT.</b>\n\nPlease enter an amount of 20 or more:", parse_mode="HTML")
         
     await state.update_data(deposit_amount=amount)
-    
-    # 🟢 NEW: সরাসরি TrxID চাইবে, Sender Number স্কিপ করা হলো!
     await state.set_state(DepositState.waiting_for_trxid) 
     
     data = await state.get_data()
@@ -272,9 +301,9 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
     expected_amount = user_data.get("deposit_amount", 0.0) 
     
     is_auto_verified = False
-    actual_amount = 0.0 # 🟢 NEW: ডাটাবেস থেকে আসল অ্যামাউন্ট নেওয়ার জন্য
+    actual_amount = 0.0 
     
-    # 🟢 1ST ATTEMPT: Instant Check (ইউজারের অ্যামাউন্ট ইগনোর করে আসল অ্যামাউন্ট নেবে)
+    # 🟢 1ST ATTEMPT: Instant Check 
     if db:
         sms_doc = db.collection('live_sms_payments').document(trxid).get()
         if sms_doc.exists and not sms_doc.to_dict().get('is_used', False):
@@ -299,7 +328,6 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
         await save_deposit_history(user_id=user_id, amount=actual_amount, method=method_name, trx_id=trxid, currency="BDT")
         db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
         
-        # 🟢 মেসেজে আসল অ্যামাউন্ট শো করানো হচ্ছে
         success_text = (f"🎉 <b>{method_name} Verified Successfully!</b>\n\n🧾 <b>TrxID:</b> <code>{trxid}</code>\n💰 <b>Received:</b> {actual_amount} BDT\n💎 <b>Added:</b> ${amount_usd}\n\n<i>Your balance has been updated instantly.</i>")
         
         if actual_amount != expected_amount:
@@ -313,15 +341,17 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
         return
 
-    # 🟠 FALLBACK: ASK FOR SCREENSHOT
+    # 🟠 FALLBACK: ASK FOR SCREENSHOT IN BANGLA AND ENGLISH
     await state.update_data(fallback_trxid=trxid)
     await state.set_state(DepositState.waiting_for_screenshot)
     
     fallback_text = (
-        "⚠️ <b>Transaction Not Found Automatically!</b>\n\n"
-        "Due to network issues, SMS delay, or incorrect TrxID, we couldn't verify your payment instantly.\n\n"
-        "📸 <b>Please send a SCREENSHOT of your payment receipt now.</b>\n"
-        "<i>(Our system will send it to the admin for manual review)</i>"
+        "⚠️ <b>Auto-Verification Failed! / অটো-ভেরিফাই ব্যর্থ হয়েছে!</b>\n\n"
+        "🇬🇧 We couldn't verify your transaction automatically. Please send a <b>SCREENSHOT</b> of your payment receipt here.\n"
+        "<i>(Our system will send it to the admin for manual review)</i>\n\n"
+        "🇧🇩 সার্ভার বা অন্য কোনো সমস্যার কারণে আপনার পেমেন্ট অটোমেটিক ভেরিফাই হয়নি।\n"
+        "📸 <b>অনুগ্রহ করে আপনার পেমেন্টের একটি স্পষ্ট স্ক্রিনশট (Screenshot) দিন।</b>\n"
+        "<i>(অ্যাডমিন চেক করে আপনার ব্যালেন্স অ্যাড করে দেবেন)</i>"
     )
     await processing_msg.edit_text(fallback_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]]), parse_mode="HTML")
 
@@ -336,10 +366,8 @@ async def receive_screenshot(message: Message, state: FSMContext, bot: Bot):
     method_name, trxid = data.get("payment_method"), data.get("fallback_trxid")
     expected_amount = data.get("deposit_amount", 0.0)
     
-    # Extract highest quality photo
     photo_id = message.photo[-1].file_id if message.photo else message.document.file_id
     
-    # 🟢 NEW: sender_number হিসেবে "N/A" পাঠানো হচ্ছে
     deposit_id = await create_pending_deposit(user_id=user_id, amount=expected_amount, method=method_name, sender_number="N/A", trx_id=trxid)
 
     admin_text = (
