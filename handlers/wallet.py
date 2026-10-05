@@ -273,7 +273,7 @@ async def receive_amount(message: Message, state: FSMContext):
     
     data = await state.get_data()
     methods = await get_all_payment_methods()
-    admin_receiving_number = methods.get(data.get("method_key", "bkash"), {}).get("number", "Unknown")
+    admin_receiving_number = methods.get(data.get("method_key", "bkash Payment"), {}).get("number", "Unknown")
     
     instruction = (f"📱 <b>Payment Instructions</b>\n\n🏦 <b>Method:</b> {data.get('payment_method')}\n💰 <b>Amount to send:</b> {data.get('deposit_amount')} BDT\n📲 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n⚠️ <i>After sending money, type your <b>Transaction ID (TrxID)</b> below:</i>")
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
@@ -312,8 +312,8 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
 
     # 🟢 2ND ATTEMPT: 1 Minute Wait
     if not is_auto_verified:
-        await processing_msg.edit_text("⏳ <b>Checking Server...</b>\n<i>Network delay detected. Please wait 1 minute for auto-verification...</i>", parse_mode="HTML")
-        await asyncio.sleep(60)
+        await processing_msg.edit_text("⏳ <b>Checking Server...</b>\n<i>Network delay detected. Please wait 30s for auto-verification...</i>", parse_mode="HTML")
+        await asyncio.sleep(30)
         
         if db:
             sms_doc = db.collection('live_sms_payments').document(trxid).get()
