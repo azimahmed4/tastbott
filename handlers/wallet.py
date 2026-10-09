@@ -44,7 +44,7 @@ if BYBIT_API_KEY and BYBIT_SECRET_KEY:
     masked_key = BYBIT_API_KEY[:5] + "********"
     print(f"✅ [SUCCESS] Bybit API Keys loaded! (Key: {masked_key})")
 else:
-    print("⚠️️ [WARNING] Bybit API Keys MISSING! Auto-Verify won't work.")
+    print("⚠ [WARNING] Bybit API Keys MISSING! Auto-Verify won't work.")
 
 # ==========================================
 # 📌 States
@@ -192,19 +192,47 @@ def verify_crypto_pay(trx_id: str, platform: str):
             return {"status": "error", "message": str(e)}
 
     elif platform == "bybitaddress":
-        # 🟢 CHANGED: bybitaddress অপশনে এখন বাইনান্সের ডিপোজিট এপিআই কল হবে
+        # 🟢 CHANGED: bybitaddress অপশনে এখন বাইনান্সের ডিপোজিট এপিআই কল হবে এবং ক্যাশ সিস্টেম অ্যাড করা হয়েছে
         if not BINANCE_API_KEY or not BINANCE_SECRET_KEY: return {"status": "error", "message": "Binance API keys not set."}
         try:
-            client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
-            deposits = client.get_deposit_history()
-            for tx in deposits:
+            cache_ref = db.collection('settings').document('binance_address_cache')
+            cache_doc = cache_ref.get()
+            current_time, needs_update, cached_data = time.time(), True, []
+            
+            if cache_doc.exists:
+                c_data = cache_doc.to_dict()
+                last_update = c_data.get('last_update', 0)
+                is_locked = c_data.get('is_locked', False)
+                cached_data = c_data.get('data', [])
+                
+                # Cache checking: 60 seconds strict limit to prevent IP BAN
+                if current_time - last_update < 60 or (is_locked and current_time - last_update < 120):
+                    needs_update = False
+
+            if needs_update:
+                cache_ref.set({'is_locked': True, 'last_update': current_time, 'data': cached_data}, merge=True)
+                try:
+                    client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+                    deposits = client.get_deposit_history()
+                    if isinstance(deposits, list):
+                        cached_data = deposits
+                    cache_ref.set({'is_locked': False, 'last_update': time.time(), 'data': cached_data})
+                except Exception as e:
+                    cache_ref.set({'is_locked': False, 'last_update': time.time(), 'data': cached_data})
+                    raise e
+
+            for tx in cached_data:
                 if tx.get('txId') == trx_id:
                     if tx.get('status') == 1: 
                         return {"status": "success", "amount": float(tx.get('amount', 0)), "currency": tx.get('coin', 'USDT')}
                     else: 
-                        return {"status": "failed", "message": "Network Transaction is not fully confirmed yet."}
-            return {"status": "failed", "message": "Transaction not found on network."}
+                        return {"status": "failed", "message": "Network Transaction is not fully confirmed yet. Please wait 1-2 minutes."}
+                        
+            return {"status": "failed", "message": "Transaction not found on Binance network. Please wait 1-2 minutes and try again."}
+            
         except Exception as e:
+            if "Way too much request weight" in str(e) or "-1003" in str(e): 
+                return {"status": "failed", "message": "Binance server is busy updating cache. Please wait 2-3 minutes to prevent ban."}
             return {"status": "error", "message": str(e)}
 
     elif platform == "bybit":
@@ -273,7 +301,7 @@ async def receive_amount(message: Message, state: FSMContext):
     
     data = await state.get_data()
     methods = await get_all_payment_methods()
-    admin_receiving_number = methods.get(data.get("method_key", "bkash Payment"), {}).get("number", "Unknown")
+    admin_receiving_number = methods.get(data.get("method_key", "bkash"), {}).get("number", "Unknown")
     
     instruction = (f"📱 <b>Payment Instructions</b>\n\n🏦 <b>Method:</b> {data.get('payment_method')}\n💰 <b>Amount to send:</b> {data.get('deposit_amount')} BDT\n📲 <b>Send To:</b> <code>{admin_receiving_number}</code>\n\n⚠️ <i>After sending money, type your <b>Transaction ID (TrxID)</b> below:</i>")
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="menu_wallet", style="danger")]])
@@ -312,8 +340,8 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
 
     # 🟢 2ND ATTEMPT: 1 Minute Wait
     if not is_auto_verified:
-        await processing_msg.edit_text("⏳ <b>Checking Server...</b>\n<i>Network delay detected. Please wait 30s for auto-verification...</i>", parse_mode="HTML")
-        await asyncio.sleep(30)
+        await processing_msg.edit_text("⏳ <b>Checking Server...</b>\n<i>Network delay detected. Please wait 1 minute for auto-verification...</i>", parse_mode="HTML")
+        await asyncio.sleep(60)
         
         if db:
             sms_doc = db.collection('live_sms_payments').document(trxid).get()
@@ -341,7 +369,6 @@ async def receive_trxid(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
         return
 
-    # 🟠 FALLBACK: ASK FOR SCREENSHOT IN BANGLA AND ENGLISH
     await state.update_data(fallback_trxid=trxid)
     await state.set_state(DepositState.waiting_for_screenshot)
     
