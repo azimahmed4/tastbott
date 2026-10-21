@@ -11,7 +11,6 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.base import StorageKey  # 🟢 NEW: For Cross-Chat FSM routing
 from firebase_admin import firestore
 
 from config import ADMIN_IDS, MAIN_CHANNEL_ID, MAIN_GROUPS_ID, BOT_USERNAME
@@ -244,7 +243,6 @@ async def delete_api_provider(callback: CallbackQuery):
     await callback.answer("✅ API Provider Deleted!", show_alert=True)
     await show_api_manager(callback)
 
-
 # --- Toggle Maintenance ---
 @router.callback_query(F.data == "toggle_maintenance")
 async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
@@ -385,15 +383,13 @@ async def view_single_deposit(callback: CallbackQuery):
     amount_bdt, amount_usd = data.get('amount', 0), round(data.get('amount', 0) / 125.0, 2) 
     text = (f"🔍 <b>Deposit Request</b>\n\n👤 <b>User ID:</b> <code>{data.get('user_id')}</code>\n🏦 <b>Method:</b> {data.get('method')}\n"
             f"📱 <b>Sender:</b> <code>{data.get('sender_number', 'N/A')}</code>\n💵 <b>Amount:</b> {amount_bdt} BDT (~${amount_usd})\n🧾 <b>TrxID:</b> <code>{data.get('trx_id')}</code>\n")
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"appdep_{trxid}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"rejdep_{trxid}", style="danger")], [InlineKeyboardButton(text="◀️ Back", callback_data="admin_deposits", style="primary")]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Approve", callback_data=f"appdep_{trxid}", style="success"), InlineKeyboardButton(text="❌ Reject", callback_data=f"rejdep_{trxid}", style="danger")]])
     try:
         if callback.message.photo or callback.message.document: await callback.message.edit_caption(caption=text, reply_markup=keyboard, parse_mode="HTML")
         else: await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-    except Exception:
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception: pass
 
-# 🟢 FIXED: Deposit Approve does not delete message
+# 🟢 FIXED: Deposit Approve Updates Message (No Delete)
 @router.callback_query(F.data.startswith("appdep_"))
 async def approve_deposit(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -426,7 +422,7 @@ async def approve_deposit(callback: CallbackQuery, bot: Bot):
             await callback.message.edit_text(text=success_text, reply_markup=None, parse_mode="HTML")
     except: pass
 
-# 🟢 FIXED: Deposit Reject does not delete message
+# 🟢 FIXED: Deposit Reject Updates Message (No Delete)
 @router.callback_query(F.data.startswith("rejdep_"))
 async def reject_deposit(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -480,9 +476,9 @@ async def view_single_order(callback: CallbackQuery):
             f"📦 <b>Product:</b> {data.get('product_name')}\n🔢 <b>Quantity:</b> {data.get('qty')}\n💰 <b>Total Paid:</b> ${data.get('total_price')}\n\n⏳ <b>Status:</b> {status_text}")
     
     if data.get('status') == 'pending':
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept Order", callback_data=f"acceptord_{order_id}")], [InlineKeyboardButton(text="❌ Refund & Reject", callback_data=f"reford_{order_id}", style="danger")], [InlineKeyboardButton(text="◀️ Back", callback_data="admin_orders", style="primary")]])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Accept Order", callback_data=f"acceptord_{order_id}")], [InlineKeyboardButton(text="❌ Refund & Reject", callback_data=f"reford_{order_id}", style="danger")]])
     else:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"deliver_{order_id}", style="success")], [InlineKeyboardButton(text="❌ Refund & Reject", callback_data=f"reford_{order_id}", style="danger")], [InlineKeyboardButton(text="◀️ Back", callback_data="admin_orders", style="primary")]])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"deliver_{order_id}", style="success")], [InlineKeyboardButton(text="❌ Refund & Reject", callback_data=f"reford_{order_id}", style="danger")]])
         
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -505,14 +501,15 @@ async def accept_order(callback: CallbackQuery):
     try:
         new_text = callback.message.html_text.replace("⏳ <b>Status:</b> Pending", f"👨‍💻 <b>Status:</b> Accepted by {admin_name}")
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Deliver Now (Check DM)", callback_data=f"deliver_{order_id}")],
+            [InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"deliver_{order_id}")],
             [InlineKeyboardButton(text="❌ Reject", callback_data=f"reford_{order_id}")]
         ])
         await callback.message.edit_text(new_text, reply_markup=keyboard, parse_mode="HTML")
     except: pass
     
-    await callback.answer("✅ Order Accepted! Start the bot in your DM to deliver.", show_alert=True)
+    await callback.answer("✅ Order Accepted!", show_alert=True)
 
+# 🟢 FIXED: Direct Group Delivery Prompt (No DM needed)
 @router.callback_query(F.data.startswith("deliver_"))
 async def start_delivery(callback: CallbackQuery, state: FSMContext, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -526,38 +523,60 @@ async def start_delivery(callback: CallbackQuery, state: FSMContext, bot: Bot):
         
     qty = int(data.get('qty', 1))
     
-    try:
-        prompt = await bot.send_message(chat_id=callback.from_user.id, text=f"📝 <b>Delivery Required (Item 1 of {qty})</b>\n🧾 <b>Invoice:</b> <code>{order_id}</code>\n\nPlease send details for Item #1 below OR upload a File:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]]))
-        await callback.answer("✅ Check your Bot Inbox (DM) to deliver!", show_alert=True)
-    except Exception:
-        return await callback.answer("⚠️ Please message the bot directly (DM) first!", show_alert=True)
-        
-    # 🟢 FIXED: Cross-Chat FSM State (Group -> DM)
-    dm_state = FSMContext(
-        storage=state.storage,
-        key=StorageKey(bot_id=bot.id, chat_id=callback.from_user.id, user_id=callback.from_user.id)
-    )
+    prompt_text = f"📝 <b>Delivery Required (Item 1 of {qty})</b>\n🧾 <b>Invoice:</b> <code>{order_id}</code>\n\n👇 <b>এই মেসেজের নিচে সরাসরি প্রোডাক্টের ডিটেইলস (Text/File) দিন:</b>"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]])
     
-    await dm_state.set_state(DeliveryState.waiting_for_key)
-    await dm_state.update_data(order_id=order_id, prompt_msg_id=prompt.message_id, current_item_num=1, total_qty=qty, delivered_items=[], group_msg_id=data.get('group_msg_id'), group_chat_id=data.get('group_chat_id'))
+    try:
+        await callback.message.edit_text(prompt_text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception: pass
+        
+    # 🟢 Setting State for the User inside the current Group/Chat
+    await state.set_state(DeliveryState.waiting_for_key)
+    await state.update_data(
+        order_id=order_id, 
+        prompt_msg_id=callback.message.message_id, 
+        current_item_num=1, 
+        total_qty=qty, 
+        delivered_items=[], 
+        group_msg_id=callback.message.message_id, 
+        group_chat_id=callback.message.chat.id
+    )
+    await callback.answer("গ্রুপেই ডেলিভারি ডাটা দিন!")
 
 @router.callback_query(F.data == "cancel_delivery")
 async def cancel_delivery(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id): return
+    user_data = await state.get_data()
+    order_id = user_data.get('order_id')
     await state.clear()
-    await callback.message.delete()
+    
+    if order_id:
+        try:
+            cancel_text = f"⚠️ <b>Delivery Cancelled</b>\n🧾 <b>Invoice:</b> <code>{order_id}</code>\n👨‍💻 <b>Accepted by:</b> {callback.from_user.first_name}"
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"deliver_{order_id}")],
+                [InlineKeyboardButton(text="❌ Reject", callback_data=f"reford_{order_id}")]
+            ])
+            await callback.message.edit_text(cancel_text, reply_markup=keyboard, parse_mode="HTML")
+        except: pass
+    
     await callback.answer("Delivery Cancelled.")
 
+# 🟢 FIXED: Process Direct Group Delivery
 @router.message(DeliveryState.waiting_for_key)
 async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id): return
     user_data = await state.get_data()
     order_id, prompt_msg_id, current_num, total_qty, delivered_items = user_data['order_id'], user_data['prompt_msg_id'], user_data['current_item_num'], user_data['total_qty'], user_data.get('delivered_items', [])
+    
     doc_ref = db.collection('pending_orders').document(order_id)
     doc = doc_ref.get()
     if not doc.exists or doc.to_dict().get('status') not in ['pending', 'processing']:
         await state.clear()
-        return await message.answer("❌ Error: Order not found or already processed.")
+        try: await message.delete()
+        except: pass
+        return
+        
     data = doc.to_dict()
     user_id, product_id, product_name = data.get('user_id'), data.get('product_id'), data.get('product_name')
     
@@ -565,8 +584,10 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         file_id, file_name = message.document.file_id, message.document.file_name
         delivery_caption = (f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n📦 <b>Package:</b> {product_name}\n🔢 <b>Quantity:</b> {total_qty}\n💰 <b>Total Price:</b> ${data.get('total_price')}\n\n📥 <i>Your items are inside the attached file.</i>\n➖➖➖➖➖➖➖➖➖➖")
         buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{product_id}", style="success")]])
+        
         try: await bot.send_document(chat_id=user_id, document=file_id, caption=delivery_caption, parse_mode="HTML", reply_markup=buy_again_kb)
         except Exception: pass
+        
         db.collection('orders').document(order_id).set({'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 'product_id': product_id, 'product_name': product_name, 'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': [f"File Delivered: {file_name}"], 'completed_by': message.from_user.first_name, 'timestamp': firestore.SERVER_TIMESTAMP})
         doc_ref.delete()
         
@@ -579,31 +600,37 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
             except Exception: pass
             
         await state.clear()
-        try:
-            await message.delete()
-            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
-            await message.answer(f"✅ Order Delivered Successfully via File ({file_name})!")
+        try: await message.delete() # 🟢 Delete the key message from the group
         except Exception: pass
         return
 
     admin_key = message.text
-    if not admin_key: return await message.answer("❌ Please send text or a file.")
+    if not admin_key:
+        try: await message.delete()
+        except: pass
+        return
+        
     delivered_items.append(admin_key)
     
     if current_num < total_qty:
         next_num = current_num + 1
         await state.update_data(current_item_num=next_num, delivered_items=delivered_items)
-        try: await message.delete()
+        try: await message.delete() # 🟢 Delete the key message
         except: pass
-        await bot.edit_message_text(f"📝 <b>Delivery Required (Item {next_num} of {total_qty})</b>\n\nPlease send the details for Item #{next_num} below:", chat_id=message.chat.id, message_id=prompt_msg_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]]))
+        
+        prompt_text = f"📝 <b>Delivery Required (Item {next_num} of {total_qty})</b>\n🧾 <b>Invoice:</b> <code>{order_id}</code>\n\n👇 <b>এই মেসেজের নিচে সরাসরি {next_num} নম্বর আইটেমটি দিন:</b>"
+        try: await bot.edit_message_text(text=prompt_text, chat_id=message.chat.id, message_id=prompt_msg_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_delivery", style="danger")]]))
+        except Exception: pass
         return
         
     delivery_text = f"✅ <b>DELIVERY SUCCESSFUL!</b>\n\n🧾 <b>Invoice:</b> <code>{data.get('invoice_id', order_id)}</code>\n📦 <b>Package:</b> {product_name}\n🔢 <b>Quantity:</b> {total_qty}\n💰 <b>Total Price:</b> ${data.get('total_price')}\n➖➖➖➖➖➖➖➖➖➖\n"
     for idx, item in enumerate(delivered_items, 1): delivery_text += f"🛍️ <b>Item {idx}:</b>\n<code>{item}</code>\n\n"
     delivery_text += "➖➖➖➖➖➖➖➖➖➖\n"
     buy_again_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍️ Buy Again", callback_data=f"buyprod_{product_id}", style="success")]])
+    
     try: await bot.send_message(user_id, delivery_text, parse_mode="HTML", reply_markup=buy_again_kb)
     except Exception: pass
+    
     db.collection('orders').document(order_id).set({'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 'product_id': product_id, 'product_name': product_name, 'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': delivered_items, 'completed_by': message.from_user.first_name, 'timestamp': firestore.SERVER_TIMESTAMP})
     doc_ref.delete()
     
@@ -616,13 +643,10 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         except Exception: pass
         
     await state.clear()
-    try:
-        await message.delete()
-        await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
-        await message.answer("✅ Order Delivered Successfully!")
+    try: await message.delete() # 🟢 Delete the key message from the group
     except Exception: pass
 
-# 🟢 FIXED: Refund/Reject does not delete message
+# 🟢 FIXED: Refund/Reject Updates Message (No Delete)
 @router.callback_query(F.data.startswith("reford_"))
 async def refund_order(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -728,7 +752,6 @@ async def edit_product_menu(callback: CallbackQuery):
     promo_btn_text = "🔊 Promo On" if is_muted else "🔕 Mute Promo"
     min_qty = product.get('min_qty', 1)
     
-    # Check if API is linked
     if delivery_type == "api":
         api_name = product.get('api_provider_name', 'Unknown')
         ext_id = product.get('api_product_id', 'Unknown')
