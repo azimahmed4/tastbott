@@ -244,6 +244,7 @@ async def delete_api_provider(callback: CallbackQuery):
     await callback.answer("✅ API Provider Deleted!", show_alert=True)
     await show_api_manager(callback)
 
+
 # --- Toggle Maintenance ---
 @router.callback_query(F.data == "toggle_maintenance")
 async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
@@ -355,7 +356,7 @@ async def save_new_payment_value(message: Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Settings", callback_data="admin_payment_settings", style="primary")]])
     await message.answer(f"✅ Successfully updated {data['name']} {edit_type.title()} to: <code>{new_value}</code>", reply_markup=keyboard, parse_mode="HTML")
 
-# 🟢 RESTORED: Deposit & Reporting
+# --- Deposit & Reporting ---
 @router.callback_query(F.data == "admin_report")
 async def show_deposit_report(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -416,7 +417,7 @@ async def show_recent_orders(callback: CallbackQuery):
         if len(orders_list) > 25: text += f"\n<i>...and {len(orders_list) - 25} more orders.</i>"
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
 
-# 🟢 RESTORED: Price List
+# --- Price List ---
 @router.callback_query(F.data == "admin_price_list")
 async def price_list_menu(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -685,6 +686,16 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         db.collection('orders').document(order_id).set({'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 'product_id': product_id, 'product_name': product_name, 'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': [f"File Delivered: {file_name}"], 'completed_by': message.from_user.first_name, 'timestamp': firestore.SERVER_TIMESTAMP})
         doc_ref.delete()
         
+        # 🟢 RESTORED: Public Group Notification
+        if MAIN_GROUPS_ID:
+            try:
+                str_uid = str(user_id)
+                masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}" if len(str_uid) > 4 else f"{str_uid[:1]}***{str_uid[-1:]}"
+                promo_text = f"🎉 <b>New Order Placed!</b>\n\n👤 User <code>{masked_uid}</code> just purchased:\n🛍️ <b>{product_name}</b>\n🔢 <b>Quantity:</b> {total_qty}\n\n⚡️ <i>Delivered securely by Admin.</i>"
+                buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
+                await bot.send_message(chat_id=MAIN_GROUPS_ID, text=promo_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]]))
+            except Exception: pass
+        
         group_msg_id = user_data.get('group_msg_id')
         group_chat_id = user_data.get('group_chat_id')
         if group_msg_id and group_chat_id:
@@ -727,6 +738,16 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
     
     db.collection('orders').document(order_id).set({'order_id': order_id, 'invoice_id': data.get('invoice_id', order_id), 'user_id': user_id, 'product_id': product_id, 'product_name': product_name, 'qty': total_qty, 'total_price': data.get('total_price'), 'items_delivered': delivered_items, 'completed_by': message.from_user.first_name, 'timestamp': firestore.SERVER_TIMESTAMP})
     doc_ref.delete()
+    
+    # 🟢 RESTORED: Public Group Notification
+    if MAIN_GROUPS_ID:
+        try:
+            str_uid = str(user_id)
+            masked_uid = f"{str_uid[:3]}***{str_uid[-2:]}" if len(str_uid) > 4 else f"{str_uid[:1]}***{str_uid[-1:]}"
+            promo_text = f"🎉 <b>New Order Placed!</b>\n\n👤 User <code>{masked_uid}</code> just purchased:\n🛍️ <b>{product_name}</b>\n🔢 <b>Quantity:</b> {total_qty}\n\n⚡️ <i>Delivered securely by Admin.</i>"
+            buy_url = f"https://t.me/{BOT_USERNAME}?start=buy_{product_id}" if product_id else f"https://t.me/{BOT_USERNAME}"
+            await bot.send_message(chat_id=MAIN_GROUPS_ID, text=promo_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Buy Now", url=buy_url)]]))
+        except Exception: pass
     
     group_msg_id = user_data.get('group_msg_id')
     group_chat_id = user_data.get('group_chat_id')
