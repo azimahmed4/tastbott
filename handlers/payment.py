@@ -68,9 +68,9 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
     delivered_items = []
     completed_by = "System"
     invoice_id = generate_invoice_id() 
-    api_debug_info = "" # 🟢 API Debugger Variable
+    api_debug_info = "" 
     
-    # 🟢 1. AUTO DELIVERY (Own Database Stock)
+    # 🟢 1. AUTO DELIVERY
     if delivery_type == "auto" and len(stock_list) >= qty:
         delivered_items = stock_list[:qty]
         remaining_stock = stock_list[qty:]
@@ -84,7 +84,7 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
                 try: await bot.send_message(admin_id, alert_text, parse_mode="HTML")
                 except: pass
 
-    # 🟢 2. B2B API DELIVERY (External Provider)
+    # 🟢 2. B2B API DELIVERY
     elif delivery_type == "api":
         api_provider_id = product.get('api_provider_id')
         api_product_id = product.get('api_product_id')
@@ -96,24 +96,26 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
                 base_url = api_data.get('base_url', '').rstrip('/')
                 api_key = api_data.get('api_key', '')
                 
+                extracted_id = ''.join(filter(str.isdigit, str(api_product_id)))
+                final_product_id = int(extracted_id) if extracted_id else api_product_id
+                
                 try:
                     async with aiohttp.ClientSession() as session:
                         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
                         payload = {
-                            "product_id": int(api_product_id) if str(api_product_id).isdigit() else api_product_id,
+                            "product_id": final_product_id,
                             "quantity": qty,
                             "request_id": invoice_id
                         }
                         
                         async with session.post(f"{base_url}/api/order", headers=headers, json=payload, timeout=30) as resp:
-                            res_text = await resp.text() # 🟢 Raw Response Capture
+                            res_text = await resp.text() 
                             
                             if resp.status in [200, 201]:
                                 try:
                                     res_data = await resp.json()
                                     items = []
                                     
-                                    # 🟢 Handling Multiple JSON Formats
                                     if isinstance(res_data, list):
                                         items = res_data
                                     elif isinstance(res_data, dict):
@@ -141,7 +143,7 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         else:
             api_debug_info = "API Provider ID or Product ID missing."
 
-    # 🟢 3. DELIVERY EXECUTION OR SMART FALLBACK
+    # 🟢 3. SMART FALLBACK & GROUP ALERT
     if is_delivered:
         db.collection('orders').document(invoice_id).set({
             'order_id': invoice_id, 'invoice_id': invoice_id, 'user_id': user_id, 
@@ -165,13 +167,32 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", icon_custom_emoji_id=EMOJI_SEARCH)]]), parse_mode="HTML")
         
-        # 🟢 Admin Alert (Now includes Exact API Error)
         fail_note = f"\n⚠️ <i>(API Error: {api_debug_info})</i>" if delivery_type == "api" else ("\n⚠️ <i>(Auto-Stock Empty!)</i>" if delivery_type == "auto" else "")
-        admin_text = f"🚨 <b>NEW PENDING ORDER!</b>{fail_note}\n\n🧾 <b>Invoice:</b> <code>{fallback_invoice_id}</code>\n👤 <b>User ID:</b> <code>{user_id}</code>\n📦 <b>Product:</b> {product['name']} (x{qty})\n💰 <b>Paid:</b> ${total_price}"
         
-        for admin_id in ADMIN_IDS:
-            try: await bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"vieword_{fallback_invoice_id}", style="success", icon_custom_emoji_id=EMOJI_DONE)]]), parse_mode="HTML")
-            except: pass
+        # 🟢 Admin Group Alert Format
+        admin_text = (f"🚨 <b>NEW PENDING ORDER!</b>{fail_note}\n\n"
+                      f"🧾 <b>Invoice:</b> <code>{fallback_invoice_id}</code>\n"
+                      f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+                      f"📦 <b>Product:</b> {product['name']} (x{qty})\n"
+                      f"💰 <b>Paid:</b> ${total_price}\n\n"
+                      f"⏳ <b>Status:</b> Pending")
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Accept Order", callback_data=f"acceptord_{fallback_invoice_id}"), InlineKeyboardButton(text="❌ Reject", callback_data=f"reford_{fallback_invoice_id}")]
+        ])
+        
+        try:
+            from config import ADMIN_GROUP_ID
+            if ADMIN_GROUP_ID:
+                msg = await bot.send_message(chat_id=ADMIN_GROUP_ID, text=admin_text, reply_markup=keyboard, parse_mode="HTML")
+                db.collection('pending_orders').document(fallback_invoice_id).update({'group_msg_id': msg.message_id, 'group_chat_id': ADMIN_GROUP_ID})
+            else: raise Exception()
+        except:
+            for admin_id in ADMIN_IDS:
+                try: 
+                    msg = await bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=keyboard, parse_mode="HTML")
+                    db.collection('pending_orders').document(fallback_invoice_id).update({'group_msg_id': msg.message_id, 'group_chat_id': admin_id})
+                except: pass
 
         await asyncio.sleep(1.5)
         shop_keyboard = InlineKeyboardMarkup(inline_keyboard=[
