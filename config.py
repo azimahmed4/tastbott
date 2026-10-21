@@ -12,7 +12,7 @@ REQUIRED_CHANNELS = ["@CRYPTOEVENT24", "@omni_sub", "@OmniSubCSupport"]
 MAIN_CHANNEL_ID = "@omni_sub"
 MAIN_GROUPS_ID = "@OmniSubCSupport"
 
-ADMIN_GROUP_ID = --1003981325494 # আপনার অ্যাডমিন গ্রুপের আইডি দিন
+ADMIN_GROUP_ID = -1003970555170 # আপনার অ্যাডমিন গ্রুপের আইডি দিন
 
 # 🚀 মাল্টিপল অ্যাডমিন সিস্টেম (কমা দিয়ে একাধিক আইডি দেওয়া যাবে)
 admin_id_env = os.environ.get("ADMIN_IDS") # রেন্ডারে এনভায়রনমেন্ট ভেরিয়েবলের নাম দেবেন ADMIN_IDS
