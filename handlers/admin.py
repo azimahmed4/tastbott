@@ -56,13 +56,11 @@ async def get_admin_menu():
         [InlineKeyboardButton(text="📋 Price List", callback_data="admin_price_list", style="primary"), InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_broadcast", style="primary")],
         [InlineKeyboardButton(text="📅 Today's Deposits", callback_data="admin_today_deposits", style="primary"), InlineKeyboardButton(text="📦 Today's Orders", callback_data="admin_recent_orders", style="primary")],
         [InlineKeyboardButton(text="⚙️ Payment Settings", callback_data="admin_payment_settings", style="primary", icon_custom_emoji_id=EMOJI_SETTINGS), InlineKeyboardButton(text="📊 Total Deposit Report", callback_data="admin_report", style="primary")],
-        # 🟢 NEW: API Manager Button
         [InlineKeyboardButton(text="🔗 API Providers (B2B)", callback_data="admin_api_manager", style="success")],
         [InlineKeyboardButton(text=m_text, callback_data="toggle_maintenance", style=m_style), InlineKeyboardButton(text=ap_text, callback_data="toggle_autopost", style=ap_style)],
         [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin", style="danger")]
     ])
 
-# 🟢 NEW: States for API Manager
 class ApiSettingsState(StatesGroup):
     waiting_for_name = State()
     waiting_for_url = State()
@@ -84,6 +82,7 @@ class EditProductState(StatesGroup):
     waiting_for_stock = State()
     waiting_for_desc = State() 
     waiting_for_minqty = State() 
+    waiting_for_ext_prod_id = State() # 🟢 NEW STATE
     product_id = State()
     old_price = State()
     prod_name = State()
@@ -182,7 +181,7 @@ async def add_api_url(message: Message, state: FSMContext):
 async def add_api_key(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
     url = message.text.strip()
-    if url.endswith('/'): url = url[:-1] # Remove trailing slash
+    if url.endswith('/'): url = url[:-1] 
     await state.update_data(api_url=url)
     await state.set_state(ApiSettingsState.waiting_for_key)
     await message.answer("🔑 <b>Enter your API Key:</b>", parse_mode="HTML")
@@ -223,7 +222,6 @@ async def check_api_balance(callback: CallbackQuery):
     
     try:
         async with aiohttp.ClientSession() as session:
-            # Using x-api-key as per documentation
             headers = {"x-api-key": api_key, "Content-Type": "application/json"}
             async with session.get(f"{base_url}/api/balance", headers=headers, timeout=10) as response:
                 if response.status == 200:
@@ -245,10 +243,7 @@ async def delete_api_provider(callback: CallbackQuery):
     await callback.answer("✅ API Provider Deleted!", show_alert=True)
     await show_api_manager(callback)
 
-# ==========================================
-# (Rest of the admin.py remains exactly the same below this)
-# ==========================================
-
+# --- Toggle Maintenance ---
 @router.callback_query(F.data == "toggle_maintenance")
 async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -730,6 +725,7 @@ async def process_delete_subcat(callback: CallbackQuery):
     callback.data = f"admin_cat_{cat}"
     await show_category_options(callback)
 
+# 🟢 UPDATE: Product Edit Menu with B2B API Link Option
 @router.callback_query(F.data.startswith("editp|"))
 async def edit_product_menu(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -747,15 +743,24 @@ async def edit_product_menu(callback: CallbackQuery):
     toggle_btn_text = "🔴 Pause Product" if current_status == 'active' else "🟢 Make Active"
     is_muted = product.get('promo_muted', False)
     promo_btn_text = "🔊 Promo On" if is_muted else "🔕 Mute Promo"
-    
     min_qty = product.get('min_qty', 1)
+    
+    # Check if API is linked
+    if delivery_type == "api":
+        api_name = product.get('api_provider_name', 'Unknown')
+        ext_id = product.get('api_product_id', 'Unknown')
+        delivery_display = f"🌐 Auto API (Provider: {api_name} | ID: {ext_id})"
+        link_btn_text = "🔗 Edit / Unlink API"
+    else:
+        delivery_display = delivery_type.title()
+        link_btn_text = "🔗 Link B2B API"
     
     text = (
         f"📦 <b>Product Details</b>\n\n"
         f"🔹 <b>Name:</b> {product.get('name')}\n"
         f"📂 <b>Category:</b> {cat.upper()}\n"
         f"💲 <b>Current Price:</b> ${product.get('price')}\n"
-        f"🚚 <b>Delivery Type:</b> {delivery_type.title()}\n"
+        f"🚚 <b>Delivery:</b> {delivery_display}\n"
         f"🔑 <b>Keys in Stock:</b> {stock_count}\n"
         f"📉 <b>Min Order Qty:</b> {min_qty}\n" 
         f"📊 <b>Status:</b> {status_text}"
@@ -764,10 +769,86 @@ async def edit_product_menu(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="primary"), InlineKeyboardButton(text="🔢 Set Min Qty", callback_data=f"updatep|minqty|{prod_id}", style="primary")], 
+        [InlineKeyboardButton(text=link_btn_text, callback_data=f"updatep|api|{prod_id}", style="success")], # 🟢 NEW API LINK BUTTON
         [InlineKeyboardButton(text=promo_btn_text, callback_data=f"mutepromo|{prod_id}", style="primary"), InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_status|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger"), InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+# 🟢 NEW: API Link Handlers
+@router.callback_query(F.data.startswith("updatep|api|"))
+async def start_api_link(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
+    prod_id = callback.data.split("|")[2]
+    
+    docs = db.collection('external_apis').stream() if db else []
+    keyboard = []
+    
+    for doc in docs:
+        data = doc.to_dict()
+        keyboard.append([InlineKeyboardButton(text=f"🔗 {data.get('name')}", callback_data=f"setapi|{prod_id}|{doc.id}", style="primary")])
+        
+    keyboard.append([InlineKeyboardButton(text="❌ Unlink API (Make Manual)", callback_data=f"unlinkapi|{prod_id}", style="danger")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Cancel", callback_data=f"editp|{prod_id}", style="primary")])
+    
+    text = "🔗 <b>Link External B2B API</b>\n\nWhich API provider do you want to use for auto-delivering this product?"
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("unlinkapi|"))
+async def unlink_api_product(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    prod_id = callback.data.split("|")[1]
+    product = await get_product(prod_id)
+    if not product: return await callback.answer("Error.", show_alert=True)
+    
+    # Revert to manual or auto if stock exists
+    new_delivery_type = 'auto' if len(product.get('stock', [])) > 0 else 'manual'
+    if db:
+        db.collection('products').document(prod_id).update({
+            'delivery_type': new_delivery_type,
+            'api_provider_id': firestore.DELETE_FIELD,
+            'api_provider_name': firestore.DELETE_FIELD,
+            'api_product_id': firestore.DELETE_FIELD
+        })
+    await callback.answer("✅ API Unlinked Successfully!")
+    callback.data = f"editp|{prod_id}"
+    await edit_product_menu(callback)
+
+@router.callback_query(F.data.startswith("setapi|"))
+async def ask_external_product_id(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
+    prod_id = callback.data.split("|")[1]
+    api_id = callback.data.split("|")[2]
+    
+    await state.update_data(product_id=prod_id, api_provider_id=api_id)
+    await state.set_state(EditProductState.waiting_for_ext_prod_id)
+    
+    await callback.message.edit_text("📝 <b>Enter the External Product ID:</b>\n<i>(Find this ID from your API provider's product list)</i>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
+
+@router.message(EditProductState.waiting_for_ext_prod_id)
+async def save_api_link(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    ext_prod_id = message.text.strip()
+    
+    data = await state.get_data()
+    prod_id = data['product_id']
+    api_provider_id = data['api_provider_id']
+    
+    api_doc = db.collection('external_apis').document(api_provider_id).get()
+    api_name = api_doc.to_dict().get('name', 'Unknown') if api_doc.exists else 'Unknown'
+    
+    if db:
+        db.collection('products').document(prod_id).update({
+            'delivery_type': 'api',
+            'api_provider_id': api_provider_id,
+            'api_provider_name': api_name,
+            'api_product_id': ext_prod_id,
+            'updated_at': firestore.SERVER_TIMESTAMP
+        })
+        
+    await state.clear()
+    await message.answer(f"✅ <b>API Linked Successfully!</b>\nThis product will now be auto-delivered using {api_name}.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
+
 
 @router.callback_query(F.data.startswith("mutepromo|"))
 async def toggle_promo_mute(callback: CallbackQuery):
