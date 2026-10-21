@@ -59,7 +59,6 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
     user_balance = float(user_data.get('balance', 0.0))
     if user_balance < total_price: return await callback.answer(f"❌ Insufficient balance! You need ${total_price}, but have ${user_balance:.2f}.", show_alert=True)
 
-    # 🟢 টাকা কেটে নেওয়া হচ্ছে
     db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(-total_price), 'total_spent': firestore.Increment(total_price)})
     
     delivery_type = product.get('delivery_type', 'manual')
@@ -68,7 +67,8 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
     is_delivered = False
     delivered_items = []
     completed_by = "System"
-    invoice_id = generate_invoice_id() # API Request ID এর জন্য আগে থেকেই জেনারেট করা হলো
+    invoice_id = generate_invoice_id() 
+    api_debug_info = "" # 🟢 API Debugger Variable
     
     # 🟢 1. AUTO DELIVERY (Own Database Stock)
     if delivery_type == "auto" and len(stock_list) >= qty:
@@ -104,26 +104,45 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
                             "quantity": qty,
                             "request_id": invoice_id
                         }
-                        # API তে অর্ডার প্লেস করা হচ্ছে
+                        
                         async with session.post(f"{base_url}/api/order", headers=headers, json=payload, timeout=30) as resp:
+                            res_text = await resp.text() # 🟢 Raw Response Capture
+                            
                             if resp.status in [200, 201]:
-                                res_data = await resp.json()
-                                # SafwanTiger বা অন্যান্য প্যানেল থেকে ডেলিভারি আইটেমগুলো রিসিভ করা
-                                items = res_data.get('items') or res_data.get('data') or res_data.get('delivered_items') or []
-                                
-                                if items:
-                                    if isinstance(items, list): delivered_items = items
-                                    else: delivered_items = [items]
+                                try:
+                                    res_data = await resp.json()
+                                    items = []
                                     
-                                    if len(delivered_items) >= qty:
-                                        is_delivered = True
-                                        completed_by = f"API ({api_data.get('name', 'B2B')})"
+                                    # 🟢 Handling Multiple JSON Formats
+                                    if isinstance(res_data, list):
+                                        items = res_data
+                                    elif isinstance(res_data, dict):
+                                        items = res_data.get('items') or res_data.get('data') or res_data.get('delivered_items') or res_data.get('keys') or []
+                                        if not items and 'order' in res_data and isinstance(res_data['order'], dict):
+                                            items = res_data['order'].get('items', [])
+                                            
+                                    if items:
+                                        if isinstance(items, list): delivered_items = items
+                                        else: delivered_items = [items]
+                                        
+                                        if len(delivered_items) >= qty:
+                                            is_delivered = True
+                                            completed_by = f"API ({api_data.get('name', 'B2B')})"
+                                        else:
+                                            api_debug_info = f"Quantity Mismatch! Got {len(delivered_items)}, needed {qty}."
+                                    else:
+                                        api_debug_info = f"Missing 'items' array. RAW: {res_text}"
+                                except Exception as e:
+                                    api_debug_info = f"JSON Parse Error. RAW: {res_text}"
+                            else:
+                                api_debug_info = f"HTTP {resp.status}. RAW: {res_text}"
                 except Exception as e:
-                    print(f"B2B API Error: {e}")
+                    api_debug_info = f"Request Failed: {str(e)}"
+        else:
+            api_debug_info = "API Provider ID or Product ID missing."
 
     # 🟢 3. DELIVERY EXECUTION OR SMART FALLBACK
     if is_delivered:
-        # সফলভাবে ডেলিভারি দেওয়া হচ্ছে (অটো স্টক বা API থেকে)
         db.collection('orders').document(invoice_id).set({
             'order_id': invoice_id, 'invoice_id': invoice_id, 'user_id': user_id, 
             'product_id': prod_id, 'product_name': product['name'], 'qty': qty, 'total_price': total_price, 
@@ -138,7 +157,6 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         await send_real_sales_alert(bot, prod_id, product['name'], user_id, qty)
         
     else:
-        # 🔴 SMART FALLBACK: যদি API ফেইল করে, ব্যালেন্স না থাকে বা স্টক শেষ হয়, তাহলে সোজা Manual Order এ চলে যাবে!
         fallback_invoice_id = await create_pending_order(user_id, prod_id, product['name'], qty, total_price, delivery_type="manual")
         new_balance = round(user_balance - total_price, 2)
         
@@ -147,15 +165,14 @@ async def process_payment(callback: CallbackQuery, bot: Bot):
         
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔍 Track Invoice", callback_data="search_invoice", icon_custom_emoji_id=EMOJI_SEARCH)]]), parse_mode="HTML")
         
-        # Admin Alert (with API fail warning if it was an API order)
-        fail_note = "\n⚠️ <i>(B2B API Failed or Auto-Stock Empty!)</i>" if delivery_type in ["api", "auto"] else ""
+        # 🟢 Admin Alert (Now includes Exact API Error)
+        fail_note = f"\n⚠️ <i>(API Error: {api_debug_info})</i>" if delivery_type == "api" else ("\n⚠️ <i>(Auto-Stock Empty!)</i>" if delivery_type == "auto" else "")
         admin_text = f"🚨 <b>NEW PENDING ORDER!</b>{fail_note}\n\n🧾 <b>Invoice:</b> <code>{fallback_invoice_id}</code>\n👤 <b>User ID:</b> <code>{user_id}</code>\n📦 <b>Product:</b> {product['name']} (x{qty})\n💰 <b>Paid:</b> ${total_price}"
         
         for admin_id in ADMIN_IDS:
             try: await bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Deliver Now", callback_data=f"vieword_{fallback_invoice_id}", style="success", icon_custom_emoji_id=EMOJI_DONE)]]), parse_mode="HTML")
             except: pass
 
-        # 🟢 AUTO-REDIRECT TO SHOP MENU 
         await asyncio.sleep(1.5)
         shop_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌐 VPN", callback_data="showcat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="showcat_proxy", style="primary")],
