@@ -4,6 +4,7 @@
 # ==========================================
 import time
 import asyncio
+import aiohttp
 from datetime import datetime, timedelta, timezone, time as dt_time
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
@@ -55,9 +56,17 @@ async def get_admin_menu():
         [InlineKeyboardButton(text="📋 Price List", callback_data="admin_price_list", style="primary"), InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_broadcast", style="primary")],
         [InlineKeyboardButton(text="📅 Today's Deposits", callback_data="admin_today_deposits", style="primary"), InlineKeyboardButton(text="📦 Today's Orders", callback_data="admin_recent_orders", style="primary")],
         [InlineKeyboardButton(text="⚙️ Payment Settings", callback_data="admin_payment_settings", style="primary", icon_custom_emoji_id=EMOJI_SETTINGS), InlineKeyboardButton(text="📊 Total Deposit Report", callback_data="admin_report", style="primary")],
+        # 🟢 NEW: API Manager Button
+        [InlineKeyboardButton(text="🔗 API Providers (B2B)", callback_data="admin_api_manager", style="success")],
         [InlineKeyboardButton(text=m_text, callback_data="toggle_maintenance", style=m_style), InlineKeyboardButton(text=ap_text, callback_data="toggle_autopost", style=ap_style)],
         [InlineKeyboardButton(text="❌ Close Panel", callback_data="close_admin", style="danger")]
     ])
+
+# 🟢 NEW: States for API Manager
+class ApiSettingsState(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_url = State()
+    waiting_for_key = State()
 
 class AddSubCatState(StatesGroup):
     category = State()
@@ -74,7 +83,7 @@ class EditProductState(StatesGroup):
     waiting_for_price = State()
     waiting_for_stock = State()
     waiting_for_desc = State() 
-    waiting_for_minqty = State() # 🟢 NEW STATE FOR MOQ
+    waiting_for_minqty = State() 
     product_id = State()
     old_price = State()
     prod_name = State()
@@ -130,7 +139,116 @@ async def back_to_admin(callback: CallbackQuery, state: FSMContext):
             await callback.message.delete()
             await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>", reply_markup=menu, parse_mode="HTML")
 
-# --- Maintenance & Payment functions remain same... ---
+# ==========================================
+# 🔗 B2B API MANAGER LOGIC
+# ==========================================
+@router.callback_query(F.data == "admin_api_manager")
+async def show_api_manager(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    if not db: return await callback.answer("Database Error", show_alert=True)
+    
+    docs = db.collection('external_apis').stream()
+    keyboard = []
+    
+    for doc in docs:
+        data = doc.to_dict()
+        api_id = doc.id
+        name = data.get('name', 'Unknown')
+        keyboard.append([
+            InlineKeyboardButton(text=f"💳 Balance: {name}", callback_data=f"check_api_bal|{api_id}", style="primary"),
+            InlineKeyboardButton(text="🗑️", callback_data=f"del_api|{api_id}", style="danger")
+        ])
+        
+    keyboard.append([InlineKeyboardButton(text="➕ Add New API Provider", callback_data="add_new_api", style="success")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")])
+    
+    text = "🔗 <b>B2B API Manager</b>\n\nManage your external API connections for auto-fetching products. You can add multiple providers here."
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+
+@router.callback_query(F.data == "add_new_api")
+async def add_api_name(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id): return
+    await state.set_state(ApiSettingsState.waiting_for_name)
+    await callback.message.edit_text("📝 <b>Enter API Provider Name:</b>\n(e.g., SafwanTiger, OwlProxy)", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_api_manager", style="danger")]]))
+
+@router.message(ApiSettingsState.waiting_for_name)
+async def add_api_url(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await state.update_data(api_name=message.text.strip())
+    await state.set_state(ApiSettingsState.waiting_for_url)
+    await message.answer("🌐 <b>Enter API Base URL:</b>\n(e.g., <code>https://safwantigershopbot-production.up.railway.app</code>)", parse_mode="HTML")
+
+@router.message(ApiSettingsState.waiting_for_url)
+async def add_api_key(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    url = message.text.strip()
+    if url.endswith('/'): url = url[:-1] # Remove trailing slash
+    await state.update_data(api_url=url)
+    await state.set_state(ApiSettingsState.waiting_for_key)
+    await message.answer("🔑 <b>Enter your API Key:</b>", parse_mode="HTML")
+
+@router.message(ApiSettingsState.waiting_for_key)
+async def save_new_api(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    api_key = message.text.strip()
+    data = await state.get_data()
+    api_name = data['api_name']
+    api_url = data['api_url']
+    
+    api_id = f"api_{int(time.time())}"
+    if db:
+        db.collection('external_apis').document(api_id).set({
+            'name': api_name,
+            'base_url': api_url,
+            'api_key': api_key,
+            'created_at': firestore.SERVER_TIMESTAMP
+        })
+        
+    await state.clear()
+    await message.answer(f"✅ <b>API Provider Saved Successfully!</b>\n\n📛 {api_name}\n🌐 {api_url}", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to API Manager", callback_data="admin_api_manager", style="primary")]]))
+
+@router.callback_query(F.data.startswith("check_api_bal|"))
+async def check_api_balance(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    api_id = callback.data.split("|")[1]
+    
+    doc = db.collection('external_apis').document(api_id).get()
+    if not doc.exists: return await callback.answer("❌ API not found.", show_alert=True)
+    
+    data = doc.to_dict()
+    base_url = data.get('base_url')
+    api_key = data.get('api_key')
+    
+    await callback.message.edit_text(f"⏳ Fetching balance from <b>{data.get('name')}</b>...", parse_mode="HTML")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Using x-api-key as per documentation
+            headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+            async with session.get(f"{base_url}/api/balance", headers=headers, timeout=10) as response:
+                if response.status == 200:
+                    res_data = await response.json()
+                    balance = res_data.get('balance', 'Unknown')
+                    text = f"💰 <b>{data.get('name')} Balance:</b>\n\n💵 <b>{balance}</b>"
+                else:
+                    text = f"❌ <b>API Error:</b> HTTP {response.status}\nCould not fetch balance."
+    except Exception as e:
+        text = f"❌ <b>Connection Error:</b>\n<code>{str(e)}</code>"
+        
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data="admin_api_manager", style="primary")]]), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("del_api|"))
+async def delete_api_provider(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id): return
+    api_id = callback.data.split("|")[1]
+    if db: db.collection('external_apis').document(api_id).delete()
+    await callback.answer("✅ API Provider Deleted!", show_alert=True)
+    await show_api_manager(callback)
+
+# ==========================================
+# (Rest of the admin.py remains exactly the same below this)
+# ==========================================
+
 @router.callback_query(F.data == "toggle_maintenance")
 async def toggle_maintenance_mode(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -612,7 +730,6 @@ async def process_delete_subcat(callback: CallbackQuery):
     callback.data = f"admin_cat_{cat}"
     await show_category_options(callback)
 
-# 🟢 EDIT PRODUCT (Added MOQ Button)
 @router.callback_query(F.data.startswith("editp|"))
 async def edit_product_menu(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -631,7 +748,6 @@ async def edit_product_menu(callback: CallbackQuery):
     is_muted = product.get('promo_muted', False)
     promo_btn_text = "🔊 Promo On" if is_muted else "🔕 Mute Promo"
     
-    # 🟢 NEW: Get current Min Qty
     min_qty = product.get('min_qty', 1)
     
     text = (
@@ -641,13 +757,13 @@ async def edit_product_menu(callback: CallbackQuery):
         f"💲 <b>Current Price:</b> ${product.get('price')}\n"
         f"🚚 <b>Delivery Type:</b> {delivery_type.title()}\n"
         f"🔑 <b>Keys in Stock:</b> {stock_count}\n"
-        f"📉 <b>Min Order Qty:</b> {min_qty}\n" # 🟢 Shown in menu
+        f"📉 <b>Min Order Qty:</b> {min_qty}\n" 
         f"📊 <b>Status:</b> {status_text}"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💲 Edit Price", callback_data=f"updatep|price|{prod_id}", style="primary"), InlineKeyboardButton(text="➕ Add Stock", callback_data=f"updatep|stock|{prod_id}", style="primary")],
-        [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="primary"), InlineKeyboardButton(text="🔢 Set Min Qty", callback_data=f"updatep|minqty|{prod_id}", style="primary")], # 🟢 NEW BUTTON
+        [InlineKeyboardButton(text="📝 Edit Description", callback_data=f"updatep|desc|{prod_id}", style="primary"), InlineKeyboardButton(text="🔢 Set Min Qty", callback_data=f"updatep|minqty|{prod_id}", style="primary")], 
         [InlineKeyboardButton(text=promo_btn_text, callback_data=f"mutepromo|{prod_id}", style="primary"), InlineKeyboardButton(text=toggle_btn_text, callback_data=f"toggle_status|{prod_id}", style="primary")],
         [InlineKeyboardButton(text="🗑️ Delete Product", callback_data=f"delp|{prod_id}", style="danger"), InlineKeyboardButton(text="◀️ Back", callback_data=back_btn, style="primary")]
     ])
@@ -707,11 +823,10 @@ async def start_update_product(callback: CallbackQuery, state: FSMContext):
         format_msg = "Format: <code>IP:Port:User:Pass</code>" if cat == "proxy" else "Format: <code>Email:Password</code>" if cat == "vpn" else "Format: <code>Link or Key</code>"
         inst = f"➕ <b>Add Stock for {product.get('name')}</b>\n\nSend a text message with multiple lines OR upload a <b>.txt</b> file.\n<i>Empty lines and extra spaces will be ignored automatically.</i>\n\n🔹 {format_msg}"
         await callback.message.edit_text(inst, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
-    elif action == "minqty": # 🟢 NEW: Handle Min Qty state
+    elif action == "minqty":
         await state.set_state(EditProductState.waiting_for_minqty)
         await callback.message.edit_text(f"🔢 <b>Set Minimum Order Qty for {product.get('name')}</b>\nCurrent Min Qty: {product.get('min_qty', 1)}\n\nEnter the new minimum quantity (e.g., 5 or 10):", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data=f"editp|{prod_id}", style="danger")]]))
 
-# 🟢 NEW: Process Min Qty
 @router.message(EditProductState.waiting_for_minqty)
 async def process_minqty_update(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
@@ -879,7 +994,7 @@ async def save_product_to_db(message: Message, state: FSMContext, bot: Bot, desc
     prod_data = {
         'product_id': new_prod_id, 'category': data['prod_category'], 'sub_category': data['prod_subcat'],
         'name': data['prod_name'], 'price': price, 'delivery_type': 'manual', 'stock': [],
-        'status': 'active', 'promo_muted': False, 'min_qty': 1, # 🟢 Default min qty 1
+        'status': 'active', 'promo_muted': False, 'min_qty': 1,
         'updated_at': firestore.SERVER_TIMESTAMP
     }
     if desc: prod_data['description'] = desc
