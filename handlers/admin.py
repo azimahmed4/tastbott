@@ -11,6 +11,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.base import StorageKey  # 🟢 NEW: For Cross-Chat FSM routing
 from firebase_admin import firestore
 
 from config import ADMIN_IDS, MAIN_CHANNEL_ID, MAIN_GROUPS_ID, BOT_USERNAME
@@ -355,104 +356,6 @@ async def save_new_payment_value(message: Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Settings", callback_data="admin_payment_settings", style="primary")]])
     await message.answer(f"✅ Successfully updated {data['name']} {edit_type.title()} to: <code>{new_value}</code>", reply_markup=keyboard, parse_mode="HTML")
 
-# --- Deposit & Reporting ---
-@router.callback_query(F.data == "admin_report")
-async def show_deposit_report(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    await callback.answer("Generating Report...")
-    report_data = await get_deposit_statement()
-    if not report_data:
-        text = "📊 <b>TOTAL DEPOSIT STATEMENT</b>\n\n⚠️ No deposit history found yet."
-    else:
-        text = "📊 <b>TOTAL DEPOSIT STATEMENT</b>\n\n"
-        total_usd = sum((det['amount'] / 125.0) if det['currency'] == "BDT" else det['amount'] for det in report_data.values())
-        for method, details in report_data.items():
-            text += f"🔹 <b>{method}:</b> {details['amount']:,.2f} {details['currency']}\n"
-        text += f"\n💰 <b>Estimated Total (USD):</b> ~${total_usd:,.2f}"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="primary")]])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data == "admin_today_deposits")
-async def show_today_deposits(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    if not db: return await callback.answer("Database Error", show_alert=True)
-    await callback.answer("Loading today's transactions...")
-    bdt_tz = timezone(timedelta(hours=6))
-    today_midnight_bdt = datetime.combine(datetime.now(bdt_tz).date(), dt_time.min).replace(tzinfo=bdt_tz)
-    docs = db.collection('deposit_history').where('timestamp', '>=', today_midnight_bdt).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
-    method_counts, trx_list, total_bdt, total_usd = {}, [], 0, 0
-    for doc in docs:
-        data = doc.to_dict()
-        method, amount, currency = data.get('method', 'Unknown'), data.get('amount', 0), data.get('currency', 'BDT')
-        method_counts[method] = method_counts.get(method, 0) + 1
-        total_bdt += amount if currency == "BDT" else 0
-        total_usd += amount if currency != "BDT" else 0
-        trx_list.append(f"▪️ <b>{method}:</b> <code>{data.get('trx_id', 'Unknown')}</code> ({amount} {currency})")
-    if not trx_list:
-        text = "📅 <b>Today's Transactions</b>\n\n⚠️ No approved transactions found for today."
-    else:
-        text = "📅 <b>Today's Transactions</b>\n\n📊 <b>Summary:</b>\n" + "".join([f"🔹 {m}: {c} pcs\n" for m, c in method_counts.items()])
-        text += f"\n💰 <b>Total (BDT):</b> {total_bdt:,.2f} ৳\n💎 <b>Total (USD):</b> ${total_usd:,.2f}\n\n🧾 <b>Recent TrxIDs:</b>\n" + "\n".join(trx_list[:25])
-        if len(trx_list) > 25: text += f"\n<i>...and {len(trx_list) - 25} more.</i>"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
-
-@router.callback_query(F.data == "admin_recent_orders")
-async def show_recent_orders(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    if not db: return await callback.answer("Database Error", show_alert=True)
-    await callback.answer("Loading today's orders...")
-    bdt_tz = timezone(timedelta(hours=6))
-    today_midnight_bdt = datetime.combine(datetime.now(bdt_tz).date(), dt_time.min).replace(tzinfo=bdt_tz)
-    docs = db.collection('orders').where('timestamp', '>=', today_midnight_bdt).order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
-    total_sales, total_items, orders_list = 0.0, 0, []
-    for doc in docs:
-        data = doc.to_dict()
-        qty, price = data.get('qty', 1), data.get('total_price', 0.0)
-        total_items += qty; total_sales += price
-        orders_list.append(f"📦 <b>{data.get('product_name', 'Unknown')}</b> (x{qty}) - ${price}\n   └ 🔖 <b>Trk ID:</b> <code>{data.get('invoice_id', doc.id)}</code>")
-    if not orders_list: text = "📦 <b>Today's Orders</b>\n\n⚠️ No orders have been completed today."
-    else:
-        text = f"📦 <b>Today's Orders</b>\n\n📊 <b>Items Sold:</b> {total_items}\n💰 <b>Total Sales:</b> ${total_sales:.2f}\n\n🧾 <b>Order Details:</b>\n" + "\n".join(orders_list[:25])
-        if len(orders_list) > 25: text += f"\n<i>...and {len(orders_list) - 25} more orders.</i>"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back", callback_data="back_to_admin", style="primary")]]), parse_mode="HTML")
-
-# --- Price List ---
-@router.callback_query(F.data == "admin_price_list")
-async def price_list_menu(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 VPN", callback_data="plist_cat_vpn", style="primary"), InlineKeyboardButton(text="🛡️ Proxy", callback_data="plist_cat_proxy", style="primary")],
-        [InlineKeyboardButton(text="🎟️ Premium", callback_data="plist_cat_sub", style="primary"), InlineKeyboardButton(text="🤖 AI Service", callback_data="plist_cat_ai", style="primary")],
-        [InlineKeyboardButton(text="◀️ Back to Dashboard", callback_data="back_to_admin", style="danger")]
-    ])
-    await callback.message.edit_text("📋 <b>Generate Price List</b>\n\nWhich category list do you want to generate?", reply_markup=keyboard, parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("plist_cat_"))
-async def price_list_subcat(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id): return
-    cat = callback.data.split("_")[2]
-    if cat in ['vpn', 'proxy']:
-        subcats = await get_subcategories(cat)
-        keyboard = [[InlineKeyboardButton(text=f"📂 {sc['name']}", callback_data=f"plist_gen|{cat}|{sc['subcat_id']}", style="primary")] for sc in subcats]
-        keyboard.append([InlineKeyboardButton(text="◀️ Back", callback_data="admin_price_list", style="danger")])
-        await callback.message.edit_text("📂 <b>Select Sub-Category:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-    else:
-        await generate_list_message(callback, cat, "none")
-
-@router.callback_query(F.data.startswith("plist_gen|"))
-async def price_list_generate_callback(callback: CallbackQuery):
-    await generate_list_message(callback, callback.data.split("|")[1], callback.data.split("|")[2])
-
-async def generate_list_message(callback: CallbackQuery, cat: str, subcat: str):
-    products_dict = await get_products_by_category(cat, subcat)
-    if not products_dict: return await callback.answer("⚠️ No products found!", show_alert=True)
-    msg_text = f"🔥 <b>Available {cat.upper()} Packages</b> 🔥\n\n"
-    for pid, details in products_dict.items():
-        if details.get('status', 'active') == 'active': msg_text += f"✅ {details['name']} ➔ <b>${details['price']}</b>\n"
-    msg_text += f"\n🛒 <i>Order now from our bot! @{BOT_USERNAME}</i>"
-    await callback.message.delete()
-    await callback.message.answer(msg_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Back to Admin Panel", callback_data="back_to_admin", style="danger")]]), parse_mode="HTML")
-
 # --- Deposit Approvals ---
 @router.callback_query(F.data == "admin_deposits")
 async def show_pending_deposits(callback: CallbackQuery):
@@ -490,50 +393,70 @@ async def view_single_deposit(callback: CallbackQuery):
         await callback.message.delete()
         await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
+# 🟢 FIXED: Deposit Approve does not delete message
 @router.callback_query(F.data.startswith("appdep_"))
 async def approve_deposit(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
     trxid = callback.data.split("_")[1]
     doc_ref = db.collection('pending_deposits').document(trxid)
     doc = doc_ref.get()
-    menu = await get_admin_menu()
+    
     if not doc.exists or doc.to_dict().get('status') != 'pending':
-        await callback.answer("❌ Already processed.", show_alert=True)
-        await callback.message.delete()
-        return await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>\n\nSelect an action below:", reply_markup=menu, parse_mode="HTML")
+        return await callback.answer("❌ Already processed.", show_alert=True)
+        
     data = doc.to_dict()
     user_id, amount_bdt, method_name = data.get('user_id'), data.get('amount', 0), data.get('method', 'Local Payment')
     amount_usd = round(amount_bdt / 125.0, 2)
     db.collection('users').document(str(user_id)).update({'balance': firestore.Increment(amount_usd)})
     doc_ref.update({'status': 'approved'})
     await save_deposit_history(user_id=user_id, amount=amount_bdt, method=method_name, trx_id=trxid, currency="BDT")
+    
     try: await bot.send_message(user_id, f"🎉 <b>Deposit Approved!</b>\n<b>${amount_usd}</b> added to your wallet.", parse_mode="HTML")
     except: pass
+    
     await callback.answer("✅ Deposit Approved!", show_alert=True)
-    await callback.message.delete() 
-    await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>", reply_markup=menu, parse_mode="HTML")
+    
+    admin_name = callback.from_user.first_name
+    success_text = f"✅ <b>DEPOSIT APPROVED</b>\n\n👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Amount:</b> {amount_bdt} BDT\n🧾 <b>TrxID:</b> <code>{trxid}</code>\n👨‍💻 <b>Approved by:</b> {admin_name}"
+    
+    try:
+        if callback.message.photo or callback.message.document:
+            await callback.message.edit_caption(caption=success_text, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=success_text, reply_markup=None, parse_mode="HTML")
+    except: pass
 
+# 🟢 FIXED: Deposit Reject does not delete message
 @router.callback_query(F.data.startswith("rejdep_"))
 async def reject_deposit(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
     trxid = callback.data.split("_")[1]
     doc_ref = db.collection('pending_deposits').document(trxid)
     doc = doc_ref.get()
-    menu = await get_admin_menu()
+    
     if not doc.exists or doc.to_dict().get('status') != 'pending':
-        await callback.answer("❌ Already processed.", show_alert=True)
-        await callback.message.delete()
-        return await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>", reply_markup=menu, parse_mode="HTML")
+        return await callback.answer("❌ Already processed.", show_alert=True)
+        
     data = doc.to_dict()
     user_id, amount_bdt = data.get('user_id'), data.get('amount', 0)
     doc_ref.update({'status': 'rejected'})
+    
     try: await bot.send_message(user_id, f"❌ <b>Deposit Rejected!</b>\nYour request for {amount_bdt} BDT was rejected.", parse_mode="HTML")
     except: pass
+    
     await callback.answer("❌ Deposit Rejected!", show_alert=True)
-    await callback.message.delete() 
-    await callback.message.answer("👨‍💻 <b>Admin Control Panel</b>", reply_markup=menu, parse_mode="HTML")
+    
+    admin_name = callback.from_user.first_name
+    rej_text = f"❌ <b>DEPOSIT REJECTED</b>\n\n👤 <b>User ID:</b> <code>{user_id}</code>\n💵 <b>Amount:</b> {amount_bdt} BDT\n🧾 <b>TrxID:</b> <code>{trxid}</code>\n👨‍💻 <b>Rejected by:</b> {admin_name}"
+    
+    try:
+        if callback.message.photo or callback.message.document:
+            await callback.message.edit_caption(caption=rej_text, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=rej_text, reply_markup=None, parse_mode="HTML")
+    except: pass
 
-# --- 🟢 Order Delivery & Group Accept Logic ---
+# --- Order Delivery & Group Accept Logic ---
 @router.callback_query(F.data == "admin_orders")
 async def show_pending_orders(callback: CallbackQuery):
     if not is_admin(callback.from_user.id): return
@@ -609,8 +532,14 @@ async def start_delivery(callback: CallbackQuery, state: FSMContext, bot: Bot):
     except Exception:
         return await callback.answer("⚠️ Please message the bot directly (DM) first!", show_alert=True)
         
-    await state.set_state(DeliveryState.waiting_for_key)
-    await state.update_data(order_id=order_id, prompt_msg_id=prompt.message_id, current_item_num=1, total_qty=qty, delivered_items=[], group_msg_id=data.get('group_msg_id'), group_chat_id=data.get('group_chat_id'))
+    # 🟢 FIXED: Cross-Chat FSM State (Group -> DM)
+    dm_state = FSMContext(
+        storage=state.storage,
+        key=StorageKey(bot_id=bot.id, chat_id=callback.from_user.id, user_id=callback.from_user.id)
+    )
+    
+    await dm_state.set_state(DeliveryState.waiting_for_key)
+    await dm_state.update_data(order_id=order_id, prompt_msg_id=prompt.message_id, current_item_num=1, total_qty=qty, delivered_items=[], group_msg_id=data.get('group_msg_id'), group_chat_id=data.get('group_chat_id'))
 
 @router.callback_query(F.data == "cancel_delivery")
 async def cancel_delivery(callback: CallbackQuery, state: FSMContext):
@@ -693,6 +622,7 @@ async def process_delivery_key(message: Message, state: FSMContext, bot: Bot):
         await message.answer("✅ Order Delivered Successfully!")
     except Exception: pass
 
+# 🟢 FIXED: Refund/Reject does not delete message
 @router.callback_query(F.data.startswith("reford_"))
 async def refund_order(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id): return
@@ -707,14 +637,12 @@ async def refund_order(callback: CallbackQuery, bot: Bot):
         try: await bot.send_message(user_id, f"⚠️ <b>Order Cancelled & Refunded!</b>\n<b>${total_price}</b> returned to wallet.", parse_mode="HTML")
         except: pass
         
-        # Update Group Message if exists
-        if data.get('group_msg_id') and data.get('group_chat_id'):
-            try:
-                rej_text = f"❌ <b>ORDER REJECTED & REFUNDED</b>\n\n🧾 <b>Invoice:</b> <code>{order_id}</code>\n👨‍💻 <b>Rejected by:</b> {callback.from_user.first_name}"
-                await bot.edit_message_text(chat_id=data['group_chat_id'], message_id=data['group_msg_id'], text=rej_text, parse_mode="HTML")
-            except Exception: pass
+        # Update Group/DM Message
+        admin_name = callback.from_user.first_name
+        rej_text = f"❌ <b>ORDER REJECTED & REFUNDED</b>\n\n🧾 <b>Invoice:</b> <code>{order_id}</code>\n👨‍💻 <b>Rejected by:</b> {admin_name}"
+        try: await callback.message.edit_text(text=rej_text, reply_markup=None, parse_mode="HTML")
+        except: pass
             
-    await callback.message.delete()
     await callback.answer("Order Rejected & Refunded!", show_alert=True)
 
 # --- Manage Products ---
@@ -901,7 +829,6 @@ async def save_api_link(message: Message, state: FSMContext):
         
     await state.clear()
     await message.answer(f"✅ <b>API Linked Successfully!</b>\nThis product will now be auto-delivered using {api_name}.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Back to Product", callback_data=f"editp|{prod_id}", style="primary")]]))
-
 
 @router.callback_query(F.data.startswith("mutepromo|"))
 async def toggle_promo_mute(callback: CallbackQuery):
