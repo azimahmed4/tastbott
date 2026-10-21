@@ -15,7 +15,8 @@ from binance.client import Client
 from pybit.unified_trading import HTTP  
 
 from database.crud import db, create_pending_deposit, save_deposit_history, get_all_payment_methods
-from config import ADMIN_IDS
+# 🟢 FIXED: ADMIN_GROUP_ID ইম্পোর্ট করা হয়েছে
+from config import ADMIN_IDS, ADMIN_GROUP_ID
 
 router = Router()
 
@@ -333,15 +334,19 @@ async def receive_screenshot(message: Message, state: FSMContext, bot: Bot):
     admin_text = f"💰 <b>NEW DEPOSIT REQUEST! (Manual Fallback)</b>\n\n👤 <b>User ID:</b> <code>{user_id}</code>\n🏦 <b>Method:</b> {method_name}\n💵 <b>Claimed Amount:</b> {expected_amount} BDT\n🧾 <b>TrxID:</b> <code>{trxid}</code>\n\n📸 <i>Review the screenshot below.</i>"
     admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔍 Verify Now", callback_data=f"viewdep_{deposit_id}", style="success", icon_custom_emoji_id=EMOJI_DONE)]])
     
-    # 🟢 Send to Admin Group if configured, otherwise fallback to Admin DMs
+    # 🟢 FIXED: Successfully sending to ADMIN_GROUP_ID
     try:
-        from config import ADMIN_GROUP_ID
-        if getattr(importlib.import_module("config"), "ADMIN_GROUP_ID", None) or ADMIN_GROUP_ID:
-            await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
+        if ADMIN_GROUP_ID:
+            msg = await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=photo_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
+            # Save group message ID to update it later when approved/rejected
+            db.collection('pending_deposits').document(deposit_id).update({'group_msg_id': msg.message_id, 'group_chat_id': ADMIN_GROUP_ID})
         else: raise Exception()
-    except:
+    except Exception as e:
+        print(f"Group send failed: {e}")
         for admin_id in ADMIN_IDS:
-            try: await bot.send_photo(chat_id=admin_id, photo=photo_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
+            try: 
+                msg = await bot.send_photo(chat_id=admin_id, photo=photo_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode="HTML")
+                db.collection('pending_deposits').document(deposit_id).update({'group_msg_id': msg.message_id, 'group_chat_id': admin_id})
             except: pass
 
     pending_text = f"✅ <b>Screenshot Received!</b>\n\n🏦 <b>Method:</b> {method_name}\n🧾 <b>TrxID:</b> <code>{trxid}</code>\n\n👨‍💻 <i>Due to a server error, your transaction has been sent to the admin for manual review. Your balance will be added once approved.</i>"
